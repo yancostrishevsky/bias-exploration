@@ -1,0 +1,15 @@
+queries_file: queries/queries.csv
+platforms: [openalex, semanticscholar]
+top_k: 25
+prompt_template: null
+openalex_mailto: "you@example.com"
+rate_limit:
+  openalex:
+    rps: 2
+    burst: 5
+  semanticscholar:
+    rps: 1
+    burst: 2
+retries:
+  max: 3
+  backoff: 1.5
