@@ -1,12 +1,10 @@
 """Command line interface for the AI Bias Search project."""
 
-from __future__ import annotations
-
 import itertools
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import typer
@@ -48,7 +46,7 @@ def _load_app_config(config_path: Path) -> AppConfig:
 
 def _instantiate_connector(name: str, config: AppConfig) -> object:
     connector_cls = get_connector(name)
-    rate_limit_cfg: RateLimitConfig | None = config.rate_limit.get(name) if config.rate_limit else None
+    rate_limit_cfg: Optional[RateLimitConfig] = config.rate_limit.get(name) if config.rate_limit else None
     limiter = None
     if rate_limit_cfg:
         limiter = RateLimiter(rate=rate_limit_cfg.rps, burst=rate_limit_cfg.burst)
@@ -62,7 +60,7 @@ def _instantiate_connector(name: str, config: AppConfig) -> object:
     return connector
 
 
-def _latest_file(directory: Path, pattern: str) -> Path | None:
+def _latest_file(directory: Path, pattern: str) -> Optional[Path]:
     matches = sorted(directory.glob(pattern))
     return matches[-1] if matches else None
 
@@ -111,7 +109,9 @@ def collect(
 def enrich(
     *,
     config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    run_timestamp: str | None = typer.Option(None, help="Specific collection timestamp to process."),
+    run_timestamp: Optional[str] = typer.Option(
+        None, help="Specific collection timestamp to process."
+    ),
 ) -> None:
     """Enrich collected records with OpenAlex metadata and store as Parquet."""
 
@@ -162,7 +162,9 @@ def _pairwise_metrics(frame: pd.DataFrame, platforms: List[str]) -> Dict[str, Di
 def eval(
     *,
     config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    run_timestamp: str | None = typer.Option(None, help="Specific enrichment timestamp to evaluate."),
+    run_timestamp: Optional[str] = typer.Option(
+        None, help="Specific enrichment timestamp to evaluate."
+    ),
 ) -> None:
     """Compute evaluation metrics and store them as JSON."""
 
@@ -195,8 +197,12 @@ def eval(
 def report(
     *,
     config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    metrics_timestamp: str | None = typer.Option(None, help="Specific metrics timestamp to include."),
-    enriched_timestamp: str | None = typer.Option(None, help="Specific enrichment timestamp to use."),
+    metrics_timestamp: Optional[str] = typer.Option(
+        None, help="Specific metrics timestamp to include."
+    ),
+    enriched_timestamp: Optional[str] = typer.Option(
+        None, help="Specific enrichment timestamp to use."
+    ),
 ) -> None:
     """Generate an HTML report for the latest metrics."""
 

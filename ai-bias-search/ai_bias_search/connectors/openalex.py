@@ -8,6 +8,7 @@ import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ai_bias_search.utils.config import RetryConfig
+from ai_bias_search.utils.ids import doi_from_url, normalise_doi
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import Record
 from ai_bias_search.utils.rate_limit import RateLimiter
@@ -72,9 +73,17 @@ class OpenAlexConnector:
                 for authorship in item.get("authorships", [])
                 if authorship.get("author") and authorship.get("author", {}).get("display_name")
             ]
+            raw_doi = item.get("doi")
+            doi = normalise_doi(raw_doi)
+            if not doi:
+                doi = doi_from_url(raw_doi)
+            if not doi:
+                primary_location = item.get("primary_location") or {}
+                if isinstance(primary_location, dict):
+                    doi = doi_from_url(primary_location.get("landing_page_url"))
             record = Record(
                 title=item.get("display_name", ""),
-                doi=item.get("doi"),
+                doi=doi,
                 url=(item.get("primary_location", {}) or {}).get("landing_page_url") or item.get("id"),
                 rank=idx,
                 raw_id=item.get("id"),

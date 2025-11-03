@@ -9,6 +9,7 @@ import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ai_bias_search.utils.config import RetryConfig
+from ai_bias_search.utils.ids import normalise_doi
 from ai_bias_search.utils.logging import configure_logging, mask_sensitive
 from ai_bias_search.utils.models import Record
 from ai_bias_search.utils.rate_limit import RateLimiter
@@ -85,7 +86,7 @@ class SemanticScholarConnector:
             doi = None
             external_ids = paper.get("externalIds") or {}
             if isinstance(external_ids, dict):
-                doi = external_ids.get("DOI")
+                doi = normalise_doi(external_ids.get("DOI"))
             record = Record(
                 title=paper.get("title", ""),
                 doi=doi,
