@@ -34,7 +34,7 @@ def generate_report(enriched_path: Path, metrics_dir: Path, output_path: Path) -
         "platforms": data.get("platform").dropna().unique().tolist() if "platform" in data.columns else [],
     }
 
-    preview = data.drop(columns=["extra"], errors="ignore").head(20)
+    preview = data.drop(columns=["extra"], errors="ignore")#.head(20)
     rendered = template.render(summary=summary, metrics=metrics, table=preview.to_dict(orient="records"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")
