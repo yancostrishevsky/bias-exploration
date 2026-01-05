@@ -14,7 +14,7 @@ from ai_bias_search.connectors import get_connector
 from ai_bias_search.connectors.base import ConnectorError
 from ai_bias_search.evaluation.biases import compute_bias_metrics
 from ai_bias_search.evaluation.overlap import jaccard, overlap_at_k
-from ai_bias_search.evaluation.ranking import kendall_tau, spearman_rho
+from ai_bias_search.evaluation.ranking_similarity import rbo
 from ai_bias_search.normalization.openalex_enrich import enrich_with_openalex
 from ai_bias_search.report.make_report import generate_report
 from ai_bias_search.utils.config import AppConfig, RateLimitConfig, load_config
@@ -152,8 +152,7 @@ def _pairwise_metrics(frame: pd.DataFrame, platforms: List[str]) -> Dict[str, Di
                 [record.get("doi") for record in r_records],
             ),
             "overlap_at_k": overlap_at_k(l_records, r_records, k=min(len(l_records), len(r_records))),
-            "spearman": spearman_rho(l_records, r_records),
-            "kendall": kendall_tau(l_records, r_records),
+            "rbo": rbo(l_records, r_records),
         }
     return metrics
 
