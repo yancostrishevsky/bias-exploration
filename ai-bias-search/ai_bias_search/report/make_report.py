@@ -11,6 +11,7 @@ from typing import Dict, List
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from ai_bias_search.evaluation.biases import core_ranking_table
 from ai_bias_search.utils.io import read_parquet
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.viz.plots import (
@@ -51,11 +52,13 @@ def generate_report(enriched_path: Path, metrics_dir: Path, output_path: Path) -
     plots = _generate_plots(data, latest_metrics)
 
     preview = data.drop(columns=["extra"], errors="ignore")
+    core_ranking_rows = core_ranking_table(data)
     rendered = template.render(
         summary=summary,
         latest_metrics=latest_metrics,
         metrics_timestamp=metrics_timestamp,
         table=preview.to_dict(orient="records"),
+        core_ranking_table=core_ranking_rows,
         plots=plots,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)

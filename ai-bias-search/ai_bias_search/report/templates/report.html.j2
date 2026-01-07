@@ -4,12 +4,16 @@
   <meta charset="utf-8" />
   <title>Bias exploration</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 1.5rem; }
+    body { font-family: Arial, sans-serif; margin: 1.5rem; color: #222; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
     th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     th { background-color: #f5f5f5; }
     h1, h2 { color: #333; }
-    pre { background-color: #f5f5f5; padding: 0.5rem; }
+    pre { background-color: #f5f5f5; padding: 0.5rem; overflow-x: auto; }
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+    .chart-card { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; background: #fafafa; }
+    .chart-card h3 { margin-top: 0; }
+    .chart-card img { max-width: 100%; height: auto; display: block; }
   </style>
 </head>
 <body>
@@ -21,11 +25,115 @@
   </section>
 
   <section>
-    <h2>Metrics</h2>
-    {% for name, value in metrics.items() %}
-    <h3>{{ name }}</h3>
-    <pre>{{ value | tojson(indent=2) }}</pre>
-    {% endfor %}
+    <h2>Visualizations</h2>
+    {% if plots %}
+    <div class="charts">
+      {% for plot in plots %}
+      <div class="chart-card">
+        <h3>{{ plot.title }}</h3>
+        <img src="data:image/png;base64,{{ plot.data_url }}" alt="{{ plot.title }}" />
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No visualizations available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Metrics{% if metrics_timestamp %} ({{ metrics_timestamp }}){% endif %}</h2>
+    {% if latest_metrics %}
+      {% if latest_metrics.biases %}
+      <h3>Bias metrics (overall)</h3>
+      <pre>{{ latest_metrics.biases | tojson(indent=2) }}</pre>
+      {% if latest_metrics.biases.by_platform %}
+      <h4>Bias metrics by platform</h4>
+      {% for platform, vals in latest_metrics.biases.by_platform.items() %}
+      <h5>{{ platform }}</h5>
+      <pre>{{ vals | tojson(indent=2) }}</pre>
+      {% endfor %}
+      {% endif %}
+      {% endif %}
+
+      <h3>Pairwise ranking similarity</h3>
+      {% if latest_metrics.pairwise %}
+      <table>
+        <thead>
+          <tr>
+            <th>Platform pair</th>
+            <th>Jaccard</th>
+            <th>Overlap@k</th>
+            <th>RBO</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key, vals in latest_metrics.pairwise.items() %}
+          <tr>
+            <td>{{ key }}</td>
+            {% set j = vals.get("jaccard") %}
+            {% set o = vals.get("overlap_at_k") %}
+            {% set r = vals.get("rbo") %}
+            <td>{{ "%.3f"|format(j) if j is not none else "N/A" }}</td>
+            <td>{{ "%.3f"|format(o) if o is not none else "N/A" }}</td>
+            <td>{{ "%.3f"|format(r) if r is not none else "N/A" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p>No pairwise metrics available.</p>
+      {% endif %}
+
+      {% if latest_metrics.source %}
+      <p><em>Metrics source: {{ latest_metrics.source }}</em></p>
+      {% endif %}
+    {% else %}
+    <p>No metrics available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>CORE ranking</h2>
+    {% if core_ranking_table %}
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Eligible records</th>
+          <th>A* count</th>
+          <th>A* share</th>
+          <th>A count</th>
+          <th>A share</th>
+          <th>B count</th>
+          <th>B share</th>
+          <th>C count</th>
+          <th>C share</th>
+          <th>Missing count</th>
+          <th>Missing share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in core_ranking_table %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
+          <td>{{ row.a_star_count if row.a_star_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.a_star_share * 100) if row.a_star_share is not none else "N/A" }}</td>
+          <td>{{ row.a_count if row.a_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.a_share * 100) if row.a_share is not none else "N/A" }}</td>
+          <td>{{ row.b_count if row.b_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.b_share * 100) if row.b_share is not none else "N/A" }}</td>
+          <td>{{ row.c_count if row.c_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.c_share * 100) if row.c_share is not none else "N/A" }}</td>
+          <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.missing_share * 100) if row.missing_share is not none else "N/A" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No CORE ranking summary available.</p>
+    {% endif %}
   </section>
 
   <section>

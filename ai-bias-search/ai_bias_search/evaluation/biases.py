@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+CORE_RANK_LABELS = {"A*": "a_star", "A": "a", "B": "b", "C": "c"}
+
 
 def compute_bias_metrics(frame: pd.DataFrame) -> Dict[str, Any]:
     """Compute a suite of bias metrics from an enriched dataframe."""
@@ -31,6 +33,7 @@ def _compute_bias_set(frame: pd.DataFrame) -> Dict[str, Any]:
     metrics["completeness"] = _metadata_completeness(frame)
     metrics["language"] = _language_bias(frame)
     metrics["open_access"] = _open_access_bias(frame)
+    metrics["core_ranking"] = _core_ranking_metrics(frame)
     metrics["publisher_hhi"] = _publisher_hhi(frame)
     metrics["rank_vs_citations"] = _rank_correlation(frame)
     return metrics
@@ -120,6 +123,82 @@ def _open_access_bias(frame: pd.DataFrame) -> Dict[str, Any]:
     return {"share_open_access": float(numeric.mean())}
 
 
+def _core_ranking_metrics(frame: pd.DataFrame) -> Dict[str, Optional[float]]:
+    stats = _core_ranking_stats(frame)
+    return {
+        "share_core_a_star": stats["a_star_share"],
+        "share_core_a_or_higher": _safe_sum(stats["a_star_share"], stats["a_share"]),
+        "share_core_ranked": _safe_sum(
+            stats["a_star_share"],
+            stats["a_share"],
+            stats["b_share"],
+            stats["c_share"],
+        ),
+        "share_core_unranked_or_missing": stats["missing_share"],
+        "core_rank_coverage": stats["core_rank_coverage"],
+    }
+
+
+def core_ranking_table(frame: pd.DataFrame) -> list[Dict[str, Any]]:
+    """Return CORE ranking counts/shares overall and per platform."""
+
+    rows = [{"platform": "overall", **_core_ranking_stats(frame)}]
+    if "platform" in frame.columns:
+        for platform, subset in frame.groupby("platform"):
+            rows.append({"platform": str(platform), **_core_ranking_stats(subset)})
+    return rows
+
+
+def _core_ranking_stats(frame: pd.DataFrame) -> Dict[str, Any]:
+    eligible = _select_core_ranking_frame(frame)
+    total = len(eligible)
+    stats: Dict[str, Any] = {"eligible_count": total}
+    if total == 0 or "core_rank" not in eligible.columns:
+        for label in CORE_RANK_LABELS.values():
+            stats[f"{label}_count"] = None
+            stats[f"{label}_share"] = None
+        stats["missing_count"] = None
+        stats["missing_share"] = None
+        stats["core_rank_coverage"] = None
+        return stats
+
+    ranks = eligible.get("core_rank")
+    if ranks is None:
+        for label in CORE_RANK_LABELS.values():
+            stats[f"{label}_count"] = None
+            stats[f"{label}_share"] = None
+        stats["missing_count"] = None
+        stats["missing_share"] = None
+        stats["core_rank_coverage"] = None
+        return stats
+
+    normalized = ranks.fillna("").astype(str).str.strip().str.upper()
+    counts = {rank: int((normalized == rank).sum()) for rank in CORE_RANK_LABELS}
+    ranked_count = sum(counts.values())
+    missing_count = int(total - ranked_count)
+
+    for rank, label in CORE_RANK_LABELS.items():
+        stats[f"{label}_count"] = counts[rank]
+        stats[f"{label}_share"] = float(counts[rank] / total) if total > 0 else None
+
+    stats["missing_count"] = missing_count
+    stats["missing_share"] = float(missing_count / total) if total > 0 else None
+    stats["core_rank_coverage"] = _coverage_ratio(ranks, total)
+    return stats
+
+
+def _select_core_ranking_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if "venue_type" not in frame.columns:
+        return frame
+    venue_type = frame.get("venue_type")
+    if venue_type is None:
+        return frame
+    normalized = venue_type.astype(str).str.strip().str.lower()
+    missing = venue_type.isna() | (normalized == "") | (normalized == "nan")
+    conference = normalized == "conference"
+    return frame[conference | missing]
+
+
 def _publisher_hhi(frame: pd.DataFrame) -> Dict[str, Any]:
     publishers = frame.get("publisher")
     if publishers is None:
@@ -143,3 +222,9 @@ def _rank_correlation(frame: pd.DataFrame) -> Dict[str, Any]:
     if np.isnan(rho):
         return {"spearman": None}
     return {"spearman": float(rho)}
+
+
+def _safe_sum(*values: Optional[float]) -> Optional[float]:
+    if any(value is None for value in values):
+        return None
+    return float(sum(values))

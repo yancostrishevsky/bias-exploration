@@ -43,5 +43,8 @@ class EnrichedRecord(Record):
     is_oa: Optional[bool] = None
     publication_year: Optional[int] = Field(default=None, ge=1800, le=2100)
     host_venue: Optional[str] = None
+    venue_type: Optional[str] = None
+    is_core_listed: Optional[bool] = None
+    core_rank: Optional[str] = None
     publisher: Optional[str] = None
     cited_by_count: Optional[int] = Field(default=None, ge=0)
