@@ -13,8 +13,7 @@ from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import Record
 from ai_bias_search.utils.rate_limit import RateLimiter
 
-from .base import ConnectorError, SearchConnector
-
+from .base import ConnectorError
 
 LOGGER = configure_logging()
 

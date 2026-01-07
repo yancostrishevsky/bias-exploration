@@ -8,7 +8,7 @@ AI Bias Search is a production-ready scaffold for comparing scientific literatur
 - Metadata enrichment via OpenAlex with persistent caching.
 - Evaluation layer covering overlap, ranking correlations, and bias metrics.
 - CLI pipeline: collect → enrich → eval → report.
-- Built-in tests, linters (ruff, black), and typing support.
+- Reproducible local and container workflows via `just` and Docker.
 
 ```
 ┌──────────┐    ┌──────────────┐    ┌───────────┐    ┌─────────────┐
@@ -24,58 +24,112 @@ AI Bias Search is a production-ready scaffold for comparing scientific literatur
 ## Prerequisites
 
 - Python 3.11+
-- [uv](https://github.com/astral-sh/uv) or Poetry for dependency management.
+- `uv` for local dependency management (or Poetry)
+- `just` for task execution
+- Docker + Docker Compose (optional; for container runs)
 
-## Installation
+## Quick Start (Local)
 
-1. Create a virtual environment and install dependencies:
+1. Install dependencies with `uv`:
 
    ```bash
-   uv venv
+   just setup
    source .venv/bin/activate
-   uv pip install -e .
    ```
 
-   (Alternatively: `poetry install`.)
-
-2. Copy environment defaults and update secrets:
+2. Create local configuration and environment files:
 
    ```bash
+   cp configs/config.yaml.example config.yaml
    cp .env.example .env
    ```
 
-3. Review `config.yaml.example` and adjust settings (API keys, rate limits, `top_k`, etc.).
+3. Update `config.yaml` and `queries/queries.csv` for your experiment.
 
-4. Populate `queries/queries.csv` with your search topics (sample provided with 10 multilingual entries).
+4. Run the full pipeline:
 
-## CLI Usage
+   ```bash
+   just pipeline
+   ```
 
-From the project root run:
+## Quick Start (Docker)
+
+1. Build the image:
+
+   ```bash
+   just docker-build
+   ```
+
+2. Run the pipeline inside the container:
+
+   ```bash
+   docker compose run --rm ai-bias-search just pipeline CONFIG=/app/config.yaml
+   ```
+
+The container runs as a non-root user and writes to `data/` and `results/` mounted from the project directory.
+
+## CLI Usage (Backwards Compatible)
+
+All existing CLI entrypoints still work:
 
 ```bash
-python -m ai_bias_search.cli collect --config config.yaml.example
-python -m ai_bias_search.cli enrich --config config.yaml.example
-python -m ai_bias_search.cli eval --config config.yaml.example
-python -m ai_bias_search.cli report --config config.yaml.example
+python -m ai_bias_search.cli collect --config config.yaml
+python -m ai_bias_search.cli enrich --config config.yaml
+python -m ai_bias_search.cli eval --config config.yaml
+python -m ai_bias_search.cli report --config config.yaml
 ```
 
-Command overview:
+## Configuration & Environment
 
-- `collect`: Calls configured connectors for each query and persists raw JSONL snapshots per platform under `data/raw/{platform}/`.
-- `enrich`: Resolves OpenAlex metadata for collected records and saves `data/enriched/{timestamp}.parquet`.
-- `eval`: Computes overlap, ranking, and bias metrics → `results/metrics/{timestamp}.json`.
-- `report`: Builds a self-contained HTML report mixing metrics and sample records → `results/reports/{timestamp}.html`.
+- Example configs live in `configs/config.yaml.example`.
+- Local runs default to `config.yaml` at the repo root.
+- Queries live in `queries/queries.csv`.
+- Environment variables are loaded from `.env` (see `.env.example`).
 
-Each command supports optional `--run-timestamp` switches to reprocess previous snapshots.
+Environment variables currently supported:
 
-## Testing & Quality
+- `SEMANTIC_SCHOLAR_API_KEY`
+- `PERPLEXITY_API_KEY`
+- `CONSENSUS_API_KEY`
+- `SCITE_API_KEY`
+- `LOG_LEVEL` (optional; defaults to `INFO`)
+- `CORE_RANKINGS_PATH` (optional; defaults to `CORE.csv`)
 
-Run the test suite and optional tooling:
+## Artifacts & Outputs
+
+Generated data stays under `data/` and `results/` (both gitignored):
+
+- `data/raw/<platform>/<timestamp>.jsonl` — raw platform snapshots
+- `data/enriched/<timestamp>.parquet` — merged enrichment output
+- `results/metrics/<timestamp>.json` — computed metrics
+- `results/reports/<timestamp>.html` — HTML report
+
+## Operational Notes
+
+- Rate limits and retries are configured per platform in `config.yaml`.
+- OpenAlex enrichment uses DiskCache under `data/cache/openalex`.
+- Clear artifacts and caches with `just clean`.
+- Re-run historical snapshots with `--run-timestamp` or `--metrics-timestamp`.
+
+## CORE Rankings Enrichment
+
+Place the CORE conference rankings CSV at `CORE.csv` (default) or set `CORE_RANKINGS_PATH` in `.env` to a custom location. During enrichment, OpenAlex venue metadata is matched against this file to populate `core_rank` (A*, A, B, C), plus `venue_type` and `is_core_listed`. Non-ranked CORE labels are treated as missing. This is intended for CS conference venues; journals and non-conference records may remain empty or be excluded from CORE ranking metrics.
+
+## Quality & Tooling
+
+Run quality gates locally:
 
 ```bash
-pytest
-ruff check .
-black --check .
+just fmt
+just lint
+just test
+just typecheck
+```
+
+Optional pre-commit hooks:
+
+```bash
+pre-commit install
 ```
 
 ## Project Structure
@@ -88,24 +142,13 @@ ai_bias_search/
   utils/             # IO, config, logging, rate limiting
   viz/               # Plot utilities
   report/            # HTML report generator
+configs/             # Example configurations
+scripts/             # Docker entrypoint wrapper
 data/                # (gitignored) raw/enriched caches
 results/             # (gitignored) metrics, figs, reports
 queries/             # CSV definitions of search topics
 tests/               # pytest suite
 ```
-
-## Example End-to-End Run
-
-```
-uv venv && uv pip install -e .
-cp .env.example .env
-python -m ai_bias_search.cli collect --config config.yaml.example
-python -m ai_bias_search.cli enrich --config config.yaml.example
-python -m ai_bias_search.cli eval --config config.yaml.example
-python -m ai_bias_search.cli report --config config.yaml.example
-```
-
-The workflow will produce JSONL snapshots in `data/raw/`, enriched Parquet files in `data/enriched/`, metrics JSON in `results/metrics/`, and a final HTML report in `results/reports/`.
 
 ## License
 

@@ -1,0 +1,55 @@
+set dotenv-load := true
+set shell := ["bash", "-cu"]
+
+PYTHON := "python"
+CONFIG := "config.yaml"
+
+setup:
+    uv venv -p 3.12
+    uv pip install -e .[dev]
+
+fmt:
+    ruff check --fix .
+    black .
+
+lint:
+    ruff check .
+    black --check .
+
+test:
+    pytest
+
+typecheck:
+    mypy .
+
+collect:
+    {{PYTHON}} -m ai_bias_search.cli collect --config {{CONFIG}}
+
+enrich:
+    {{PYTHON}} -m ai_bias_search.cli enrich --config {{CONFIG}}
+
+eval:
+    {{PYTHON}} -m ai_bias_search.cli eval --config {{CONFIG}}
+
+report:
+    {{PYTHON}} -m ai_bias_search.cli report --config {{CONFIG}}
+
+pipeline:
+    {{PYTHON}} -m ai_bias_search.cli collect --config {{CONFIG}}
+    {{PYTHON}} -m ai_bias_search.cli enrich --config {{CONFIG}}
+    {{PYTHON}} -m ai_bias_search.cli eval --config {{CONFIG}}
+    {{PYTHON}} -m ai_bias_search.cli report --config {{CONFIG}}
+
+clean:
+    rm -rf data/raw data/enriched data/cache results/metrics results/reports results/figs
+    rm -rf .pytest_cache .ruff_cache .mypy_cache .uv-cache .coverage htmlcov
+
+docker-build:
+    docker-compose build
+
+docker-shell:
+    docker-compose run --rm ai-bias-search bash
+
+docker-pipeline:
+    docker-compose run --rm ai-bias-search just CONFIG=/app/{{CONFIG}} pipeline
+

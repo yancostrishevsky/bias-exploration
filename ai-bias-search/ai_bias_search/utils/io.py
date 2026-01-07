@@ -6,7 +6,7 @@ import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List
+from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 

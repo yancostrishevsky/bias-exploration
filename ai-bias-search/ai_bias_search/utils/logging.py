@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Mapping
-
 
 SENSITIVE_KEYS = {"authorization", "api-key", "api_key", "apikey"}
 
 
-def configure_logging(level: str = "INFO") -> logging.Logger:
+def configure_logging(level: str | None = None) -> logging.Logger:
     """Configure the root logger and return a project-specific logger."""
 
-    logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    if level is None:
+        level = os.getenv("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
     return logging.getLogger("ai_bias_search")
 
 

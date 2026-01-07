@@ -11,7 +11,6 @@ import pandas as pd
 
 from ai_bias_search.utils.logging import configure_logging
 
-
 LOGGER = configure_logging()
 
 

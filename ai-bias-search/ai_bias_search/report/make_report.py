@@ -27,7 +27,6 @@ from ai_bias_search.viz.plots import (
     plot_year_distribution_by_platform,
 )
 
-
 LOGGER = configure_logging()
 
 

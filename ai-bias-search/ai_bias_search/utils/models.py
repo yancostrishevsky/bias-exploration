@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
-import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 DOI_REGEX = re.compile(r"^10\.\d{4,9}/[-._;()/:A-Z0-9]+$", re.IGNORECASE)
 

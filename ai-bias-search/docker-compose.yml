@@ -1,0 +1,13 @@
+services:
+  ai-bias-search:
+    build:
+      context: .
+    image: ai-bias-search:dev
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    working_dir: /app
+    tty: true
+    stdin_open: true
+    user: "${UID:-1000}:${GID:-1000}"

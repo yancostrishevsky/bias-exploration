@@ -11,7 +11,6 @@ from typing import Dict, Iterable, Optional, Tuple
 
 from ai_bias_search.utils.logging import configure_logging
 
-
 LOGGER = configure_logging()
 
 DEFAULT_CORE_PATH = (

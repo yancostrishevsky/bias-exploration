@@ -11,7 +11,6 @@ from .perplexity import PerplexityConnector
 from .scite import SciteConnector
 from .semanticscholar import SemanticScholarConnector
 
-
 CONNECTOR_REGISTRY: Dict[str, Type[SearchConnector]] = {
     OpenAlexConnector.name: OpenAlexConnector,
     SemanticScholarConnector.name: SemanticScholarConnector,

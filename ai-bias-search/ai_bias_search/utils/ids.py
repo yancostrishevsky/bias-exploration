@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Mapping, Optional
 
-
 DOI_REGEX = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 
 

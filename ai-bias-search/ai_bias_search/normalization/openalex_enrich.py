@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
+import html
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import re
-import html
+
 import httpx
 from diskcache import Cache
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from ai_bias_search.utils.core_rankings import lookup_core_rank
 from ai_bias_search.utils.config import RetryConfig
+from ai_bias_search.utils.core_rankings import lookup_core_rank
 from ai_bias_search.utils.ids import best_identifier, normalise_doi
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import EnrichedRecord
 from ai_bias_search.utils.rate_limit import RateLimiter
-
 
 LOGGER = configure_logging()
 CACHE_DIR = (Path(__file__).resolve().parents[2] / "data" / "cache" / "openalex").resolve()

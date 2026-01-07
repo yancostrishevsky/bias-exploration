@@ -1,6 +1,6 @@
 queries_file: queries/queries.csv
-platforms: [ semanticscholar]
-top_k: 10
+platforms: [openalex, semanticscholar]
+top_k: 25
 prompt_template: null
 openalex_mailto: "you@example.com"
 rate_limit:

@@ -2,9 +2,8 @@
 
 import itertools
 import json
-import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 import typer
@@ -23,13 +22,12 @@ from ai_bias_search.utils.io import (
     load_queries,
     read_jsonl,
     read_parquet,
+    utc_timestamp,
     write_jsonl,
     write_parquet,
-    utc_timestamp,
 )
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.rate_limit import RateLimiter
-
 
 LOGGER = configure_logging()
 app = typer.Typer(add_completion=False)
@@ -37,6 +35,7 @@ app = typer.Typer(add_completion=False)
 
 def _load_env() -> None:
     load_dotenv()
+    configure_logging()
 
 
 def _load_app_config(config_path: Path) -> AppConfig:
