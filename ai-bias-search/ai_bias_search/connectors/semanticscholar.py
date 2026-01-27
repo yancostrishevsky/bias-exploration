@@ -27,11 +27,22 @@ class SemanticScholarConnector:
     BULK_URL = "https://api.semanticscholar.org/graph/v1/paper/search/bulk"
     RANKED_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
     DEFAULT_FIELDS = [
-        "title", "abstract", "year", "publicationDate", "url", "venue",
-        "authors.name", "externalIds", "paperId", "isOpenAccess", "openAccessPdf",
-        "s2FieldsOfStudy", "citationCount", "referenceCount",
+        "title",
+        "abstract",
+        "year",
+        "publicationDate",
+        "url",
+        "venue",
+        "authors.name",
+        "externalIds",
+        "paperId",
+        "isOpenAccess",
+        "openAccessPdf",
+        "s2FieldsOfStudy",
+        "citationCount",
+        "referenceCount",
     ]
-    PER_PAGE = 200 
+    PER_PAGE = 200
 
     def __init__(
         self,
@@ -50,14 +61,16 @@ class SemanticScholarConnector:
             reraise=True,
         )
         self.api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
-        self.user_agent = os.getenv("AI_BIAS_USER_AGENT", "ai-bias-search/0.1 (+contact@example.com)")
+        self.user_agent = os.getenv(
+            "AI_BIAS_USER_AGENT", "ai-bias-search/0.1 (+contact@example.com)"
+        )
 
     def search(
         self,
         query: str,
         k: int,
-        prompt_template: str | None = None, 
-        params: Dict[str, Any] | None = None, 
+        prompt_template: str | None = None,
+        params: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         """Call the Semantic Scholar search endpoint and return normalized records."""
         if not query or k <= 0:
@@ -106,7 +119,9 @@ class SemanticScholarConnector:
 
     # ---------- helpers ----------
 
-    def _collect_bulk(self, qparams: Dict[str, Any], headers: Dict[str, Any], want: int) -> List[Dict[str, Any]]:
+    def _collect_bulk(
+        self, qparams: Dict[str, Any], headers: Dict[str, Any], want: int
+    ) -> List[Dict[str, Any]]:
         """Iterate /paper/search/bulk with token pagination until we collect `want` items."""
         collected: List[Dict[str, Any]] = []
         token: Optional[str] = None
@@ -134,7 +149,9 @@ class SemanticScholarConnector:
                 break
         return collected
 
-    def _collect_ranked(self, qparams: Dict[str, Any], headers: Dict[str, Any], want: int) -> List[Dict[str, Any]]:
+    def _collect_ranked(
+        self, qparams: Dict[str, Any], headers: Dict[str, Any], want: int
+    ) -> List[Dict[str, Any]]:
         """Single-page /paper/search (ranked)."""
         params = dict(qparams)
         params["limit"] = min(self.PER_PAGE, want)
@@ -156,6 +173,7 @@ class SemanticScholarConnector:
                         pass
             resp.raise_for_status()
             return resp.json()
+
         return self.retrying(execute)
 
     def close(self) -> None:

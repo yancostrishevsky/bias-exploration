@@ -5,8 +5,8 @@ PYTHON := "python"
 CONFIG := "config.yaml"
 
 setup:
-    uv venv -p 3.12
-    uv pip install -e .[dev]
+    uv venv --python 3.12
+    uv pip install -e '.[dev]'
 
 fmt:
     ruff check --fix .
@@ -52,4 +52,3 @@ docker-shell:
 
 docker-pipeline:
     docker-compose run --rm ai-bias-search just CONFIG=/app/{{CONFIG}} pipeline
-

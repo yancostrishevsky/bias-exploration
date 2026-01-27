@@ -26,7 +26,9 @@ def plot_upset(records: Iterable[Mapping[str, object]], output: Path) -> None:
         LOGGER.warning("Insufficient data to plot UpSet")
         return
 
-    pivot = frame.pivot_table(index="doi", columns="platform", values="query_id", aggfunc="count", fill_value=0)
+    pivot = frame.pivot_table(
+        index="doi", columns="platform", values="query_id", aggfunc="count", fill_value=0
+    )
     binary = pivot.astype(bool)
     upset = UpSet(binary, sort_by="cardinality")
     output.parent.mkdir(parents=True, exist_ok=True)

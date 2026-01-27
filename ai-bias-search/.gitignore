@@ -17,3 +17,5 @@ results/
 *.sqlite
 *.db
 .DS_Store
+CORE.csv
+*.xlsx

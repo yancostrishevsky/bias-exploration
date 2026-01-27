@@ -161,17 +161,14 @@ def plot_language_distribution(frame: pd.DataFrame, output: Path, top_n: int = 5
     if subset.empty:
         LOGGER.warning("No language data to plot")
         return
-    top_langs = (
-        subset["language"].str.lower().value_counts().head(top_n).index.tolist()
-    )
+    top_langs = subset["language"].str.lower().value_counts().head(top_n).index.tolist()
     filtered = subset[subset["language"].str.lower().isin(top_langs)]
     if filtered.empty:
         LOGGER.warning("No language data after filtering to top languages")
         return
-    ctab = (
-        pd.crosstab(filtered["platform"], filtered["language"].str.lower(), normalize="index")
-        .reindex(columns=top_langs, fill_value=0.0)
-    )
+    ctab = pd.crosstab(
+        filtered["platform"], filtered["language"].str.lower(), normalize="index"
+    ).reindex(columns=top_langs, fill_value=0.0)
     output.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(max(6, len(ctab) * 1.4), 4))
     ctab.plot(kind="bar", stacked=True, ax=plt.gca())
@@ -243,17 +240,19 @@ def plot_pairwise_jaccard(metrics: Dict[str, Any], output: Path) -> None:
     if not pairwise:
         LOGGER.warning("Pairwise metrics missing; skipping overlap heatmap")
         return
-    platforms = set()
+    platform_set: set[str] = set()
     for key in pairwise.keys():
         if "_vs_" in key:
             left, right = key.split("_vs_", 1)
-            platforms.update([left, right])
-    if not platforms:
+            platform_set.update([left, right])
+    if not platform_set:
         LOGGER.warning("No platforms found in pairwise metrics; skipping heatmap")
         return
-    platforms = sorted(platforms)
+    platforms = sorted(platform_set)
     index = {name: idx for idx, name in enumerate(platforms)}
-    matrix = [[1.0 if i == j else None for j in range(len(platforms))] for i in range(len(platforms))]
+    matrix = [
+        [1.0 if i == j else None for j in range(len(platforms))] for i in range(len(platforms))
+    ]
     for key, vals in pairwise.items():
         if "_vs_" not in key:
             continue
@@ -276,7 +275,15 @@ def plot_pairwise_jaccard(metrics: Dict[str, Any], output: Path) -> None:
     # annotate
     for i in range(len(platforms)):
         for j in range(len(platforms)):
-            plt.text(j, i, f"{filled.iloc[i, j]:.2f}", ha="center", va="center", color="black", fontsize=8)
+            plt.text(
+                j,
+                i,
+                f"{filled.iloc[i, j]:.2f}",
+                ha="center",
+                va="center",
+                color="black",
+                fontsize=8,
+            )
     plt.title("Platform overlap (Jaccard)")
     plt.tight_layout()
     plt.savefig(output, bbox_inches="tight")

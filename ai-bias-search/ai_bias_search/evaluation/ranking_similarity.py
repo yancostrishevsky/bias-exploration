@@ -83,4 +83,4 @@ def rbo(
         cumulative += (1 - p) * agreement * (p ** (depth - 1))
 
     agreement_at_k = overlap / evaluation_depth
-    return cumulative + agreement_at_k * (p ** evaluation_depth)
+    return cumulative + agreement_at_k * (p**evaluation_depth)

@@ -227,4 +227,5 @@ def _rank_correlation(frame: pd.DataFrame) -> Dict[str, Any]:
 def _safe_sum(*values: Optional[float]) -> Optional[float]:
     if any(value is None for value in values):
         return None
-    return float(sum(values))
+    cleaned = [value for value in values if value is not None]
+    return float(sum(cleaned))
