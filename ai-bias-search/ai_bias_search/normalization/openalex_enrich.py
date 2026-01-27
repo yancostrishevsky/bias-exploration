@@ -4,22 +4,54 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from diskcache import Cache
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
-from ai_bias_search.utils.config import RetryConfig
-from ai_bias_search.utils.core_rankings import lookup_core_rank
+from ai_bias_search.utils.config import ImpactFactorConfig, RetryConfig
+from ai_bias_search.utils.core_rankings import is_known_core_acronym, lookup_core_rank
 from ai_bias_search.utils.ids import best_identifier, normalise_doi
+from ai_bias_search.utils.impact_factor import (
+    ImpactFactorIndex,
+    load_jif_xlsx,
+    match_jcr_entry,
+)
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import EnrichedRecord
 from ai_bias_search.utils.rate_limit import RateLimiter
 
 LOGGER = configure_logging()
 CACHE_DIR = (Path(__file__).resolve().parents[2] / "data" / "cache" / "openalex").resolve()
+
+
+def _is_retryable_openalex_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (404, 410):
+            return False
+        if status in (408, 429):
+            return True
+        return 500 <= status <= 599
+    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
+
+
+def _openalex_retrying(
+    retries: RetryConfig,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Retrying:
+    return Retrying(
+        stop=stop_after_attempt(retries.max),
+        wait=wait_exponential(multiplier=1, exp_base=retries.backoff, min=1),
+        retry=retry_if_exception(_is_retryable_openalex_error),
+        reraise=True,
+        sleep=sleep,
+    )
+
 
 # --- acronym extraction helpers ---
 # A) "... - EMNLP '09", "... - WWW '18"
@@ -34,9 +66,23 @@ _ACR_TOKEN_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,14})\b")
 
 # typowe fałszywe trafienia
 _ACR_STOP = {
-    "ACM", "IEEE", "SPRINGER", "ELSEVIER", "NATURE", "SCIENCE",
-    "PROC", "PROCEEDINGS", "VOLUME", "VOL", "NO", "INTERNATIONAL", "CONFERENCE",
-    "JOURNAL", "TRANSACTIONS", "SYMPOSIUM", "WORKSHOP",
+    "ACM",
+    "IEEE",
+    "SPRINGER",
+    "ELSEVIER",
+    "NATURE",
+    "SCIENCE",
+    "PROC",
+    "PROCEEDINGS",
+    "VOLUME",
+    "VOL",
+    "NO",
+    "INTERNATIONAL",
+    "CONFERENCE",
+    "JOURNAL",
+    "TRANSACTIONS",
+    "SYMPOSIUM",
+    "WORKSHOP",
 }
 _ROMAN_NUMERAL_RE = re.compile(r"^(?=[IVXLCDM])[IVXLCDM]+$", re.IGNORECASE)
 _NOISE_RE = re.compile(r"\s*\((?:print|online)\)\s*", re.IGNORECASE)
@@ -57,12 +103,15 @@ _STRONG_ACRONYM_SOURCES = {
     "s2_dblp",
 }
 
+
 def _is_url(s: str) -> bool:
     ss = s.strip().lower()
     return ss.startswith("http://") or ss.startswith("https://") or "doi.org" in ss
 
+
 def _is_roman_numeral(value: str) -> bool:
     return bool(_ROMAN_NUMERAL_RE.match(value))
+
 
 def _normalize_venue_name(value: str | None) -> str | None:
     if not value or not isinstance(value, str):
@@ -74,6 +123,7 @@ def _normalize_venue_name(value: str | None) -> str | None:
     v = re.sub(r"\s{2,}", " ", v).strip()
     return v or None
 
+
 def _clean_acronym(value: str | None) -> str | None:
     if not value:
         return None
@@ -83,6 +133,7 @@ def _clean_acronym(value: str | None) -> str | None:
     if v in _ACR_STOP:
         return None
     return v
+
 
 def _normalize_acronym(value: str | None, *, source: str, reasons: List[str]) -> str | None:
     if not value or not isinstance(value, str):
@@ -100,14 +151,21 @@ def _normalize_acronym(value: str | None, *, source: str, reasons: List[str]) ->
         reasons.append(f"acronym_generic_weak:{cleaned}")
     return cleaned
 
+
 def _clean_acronym_token(value: str | None) -> str | None:
     cleaned = _clean_acronym(value)
     if cleaned and _is_roman_numeral(cleaned):
         return None
     return cleaned
 
+
 def extract_acronym_from_venue_text(text: str | None) -> str | None:
-    """Wyciąga akronim konferencji z nazw typu 'Proceedings ... - EMNLP '09' albo 'ACM SIGIR conference...'."""
+    """Extract a conference acronym from venue text.
+
+    Examples:
+      - "Proceedings ... - EMNLP '09"
+      - "(SIGIR 2017)"
+    """
     if not text or not isinstance(text, str):
         return None
 
@@ -130,17 +188,22 @@ def extract_acronym_from_venue_text(text: str | None) -> str | None:
             return cand
 
     # 3) tokeny w środku: zbierz wszystkie i wybierz "najbardziej sensowny"
-    tokens = [_clean_acronym_token(x) for x in _ACR_TOKEN_RE.findall(t)]
-    tokens = [x for x in tokens if x]  # type: ignore[arg-type]
+    raw_tokens = [_clean_acronym_token(x) for x in _ACR_TOKEN_RE.findall(t)]
+    tokens = [token for token in raw_tokens if token]
     if not tokens:
         return None
 
     # heurystyka: preferuj dłuższe (SIGKDD > KDD), ale nie absurdalnie długie
     tokens.sort(key=lambda x: (len(x), x), reverse=True)
-    return tokens[0]
+    for token in tokens:
+        if is_known_core_acronym(token):
+            return token
+    return None
+
 
 def _rank_value(rank: str | None) -> int:
     return _CORE_RANK_ORDER.get(rank, 0)
+
 
 def _choose_kdd_acronym() -> str:
     rank_sigkdd = lookup_core_rank(venue_name=None, venue_acronym="SIGKDD")
@@ -148,6 +211,7 @@ def _choose_kdd_acronym() -> str:
     if _rank_value(rank_sigkdd) > _rank_value(rank_kdd):
         return "SIGKDD"
     return "KDD"
+
 
 def _acronym_from_dblp(dblp: Any) -> tuple[str | None, str | None]:
     if not isinstance(dblp, str) or not dblp.strip():
@@ -161,6 +225,7 @@ def _acronym_from_dblp(dblp: Any) -> tuple[str | None, str | None]:
     if "/kdd/" in dblp_norm:
         return _choose_kdd_acronym(), "s2_dblp:/kdd/"
     return None, None
+
 
 def _acronym_from_s2_venue(venue: str | None) -> tuple[str | None, str | None]:
     if not venue or not isinstance(venue, str):
@@ -181,6 +246,7 @@ def _acronym_from_s2_venue(venue: str | None) -> tuple[str | None, str | None]:
         return "WWW", "s2_venue:www"
     return None, None
 
+
 def _compact_raw(value: Any, *, max_len: int = 120) -> Any:
     if isinstance(value, str):
         if len(value) > max_len:
@@ -191,6 +257,130 @@ def _compact_raw(value: Any, *, max_len: int = 120) -> Any:
     if isinstance(value, list):
         return [_compact_raw(v, max_len=max_len) for v in value]
     return value
+
+
+def _select_impact_factor_title(metadata: dict, record: dict) -> str | None:
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(record, dict):
+        record = {}
+
+    primary_location = metadata.get("primary_location") or {}
+    if not isinstance(primary_location, dict):
+        primary_location = {}
+
+    source = primary_location.get("source") or {}
+    if not isinstance(source, dict):
+        source = {}
+
+    host = metadata.get("host_venue") or {}
+    if not isinstance(host, dict):
+        host = {}
+
+    extra = record.get("extra") or {}
+    if not isinstance(extra, dict):
+        extra = {}
+    s2 = extra.get("semanticscholar") or {}
+    if not isinstance(s2, dict):
+        s2 = {}
+
+    candidates = (
+        host.get("display_name"),
+        source.get("display_name"),
+        primary_location.get("raw_source_name"),
+        record.get("source"),
+        s2.get("venue"),
+    )
+    for value in candidates:
+        if not isinstance(value, str):
+            continue
+        candidate = html.unescape(value).strip()
+        if not candidate or _is_url(candidate):
+            continue
+        return candidate
+    return None
+
+
+def _collect_issn_candidates(metadata: dict, record: dict) -> list[str]:
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not isinstance(record, dict):
+        record = {}
+
+    primary_location = metadata.get("primary_location") or {}
+    if not isinstance(primary_location, dict):
+        primary_location = {}
+
+    source = primary_location.get("source") or {}
+    if not isinstance(source, dict):
+        source = {}
+
+    host = metadata.get("host_venue") or {}
+    if not isinstance(host, dict):
+        host = {}
+
+    candidates: list[str] = []
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        if isinstance(value, list):
+            for item in value:
+                add(item)
+            return
+        text = str(value).strip()
+        if text:
+            candidates.append(text)
+
+    add(host.get("issn_l"))
+    add(host.get("issn"))
+    add(source.get("issn_l"))
+    add(source.get("issn"))
+    add(record.get("issn"))
+    add(record.get("eissn"))
+
+    return candidates
+
+
+def _load_impact_factor_index(config: ImpactFactorConfig) -> ImpactFactorIndex:
+    path = config.xlsx_path
+    if not path.exists():
+        LOGGER.warning("Impact factor XLSX missing at %s; mapping disabled", path)
+        return ImpactFactorIndex({}, {}, (), ())
+    try:
+        return load_jif_xlsx(
+            path,
+            sheet_name=config.sheet_name,
+            title_column=config.title_column,
+            jif_column=config.jif_column,
+            year_column=config.year_column,
+            publisher_column=config.publisher_column,
+            issn_column=config.issn_column,
+            eissn_column=config.eissn_column,
+            total_cites_column=config.total_cites_column,
+            citable_items_column=config.citable_items_column,
+            total_articles_column=config.total_articles_column,
+            jif_5y_column=config.jif_5y_column,
+            jif_wo_self_cites_column=config.jif_wo_self_cites_column,
+            jci_column=config.jci_column,
+            quartile_column=config.quartile_column,
+            jif_rank_column=config.jif_rank_column,
+        )
+    except Exception as exc:
+        LOGGER.warning("Failed to load impact factor XLSX at %s: %s", path, exc)
+        return ImpactFactorIndex({}, {}, (), ())
+
+
+def _impact_factor_payload(
+    metadata: dict,
+    record: dict,
+    index: ImpactFactorIndex,
+    config: ImpactFactorConfig,
+) -> Dict[str, Any]:
+    raw_title = _select_impact_factor_title(metadata, record)
+    issn_candidates = _collect_issn_candidates(metadata, record)
+    return match_jcr_entry(raw_title, issn_candidates, index, config)
+
 
 def extract_venue_candidates(metadata: dict, record: dict) -> dict:
     reasons: List[str] = []
@@ -258,7 +448,9 @@ def extract_venue_candidates(metadata: dict, record: dict) -> dict:
     }
 
     if not venue_name:
-        s2_venue_name = _normalize_venue_name(s2_venue_raw if isinstance(s2_venue_raw, str) else None)
+        s2_venue_name = _normalize_venue_name(
+            s2_venue_raw if isinstance(s2_venue_raw, str) else None
+        )
         if s2_venue_name and not _is_url(s2_venue_name):
             venue_name = s2_venue_name
             name_source = "semanticscholar_venue"
@@ -273,7 +465,12 @@ def extract_venue_candidates(metadata: dict, record: dict) -> dict:
         ("openalex_host_abbreviation", host.get("abbreviation")),
         ("openalex_source_abbrev_title", source.get("abbreviated_title")),
     ):
-        candidate = _normalize_acronym(value if isinstance(value, str) else None, source=source_key, reasons=reasons)
+        candidate = _normalize_acronym(
+            value if isinstance(value, str) else None, source=source_key, reasons=reasons
+        )
+        if candidate and not is_known_core_acronym(candidate):
+            reasons.append(f"venue_acronym_not_in_core:{candidate}")
+            continue
         if candidate:
             venue_acronym = candidate
             acronym_source = source_key
@@ -284,16 +481,24 @@ def extract_venue_candidates(metadata: dict, record: dict) -> dict:
         dblp_candidate, dblp_source = _acronym_from_dblp(s2_dblp)
         if dblp_candidate:
             candidate = _normalize_acronym(dblp_candidate, source="s2_dblp", reasons=reasons)
+            if candidate and not is_known_core_acronym(candidate):
+                reasons.append(f"venue_acronym_not_in_core:{candidate}")
+                candidate = None
             if candidate:
                 venue_acronym = candidate
                 acronym_source = dblp_source or "s2_dblp"
                 reasons.append(f"venue_acronym:{acronym_source}")
 
     if not venue_acronym:
-        s2_venue_name = _normalize_venue_name(s2_venue_raw if isinstance(s2_venue_raw, str) else None)
+        s2_venue_name = _normalize_venue_name(
+            s2_venue_raw if isinstance(s2_venue_raw, str) else None
+        )
         heur_candidate, heur_source = _acronym_from_s2_venue(s2_venue_name)
         if heur_candidate:
             candidate = _normalize_acronym(heur_candidate, source="s2_venue", reasons=reasons)
+            if candidate and not is_known_core_acronym(candidate):
+                reasons.append(f"venue_acronym_not_in_core:{candidate}")
+                candidate = None
             if candidate:
                 venue_acronym = candidate
                 acronym_source = heur_source or "s2_venue"
@@ -334,18 +539,24 @@ def extract_venue_candidates(metadata: dict, record: dict) -> dict:
     }
 
 
-
-def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> List[Dict[str, Any]]:
+def enrich_with_openalex(
+    records: List[Dict[str, Any]],
+    mailto: str | None,
+    impact_factor: ImpactFactorConfig | None = None,
+    *,
+    rate_limiter: RateLimiter | None = None,
+    retries: RetryConfig | None = None,
+) -> List[Dict[str, Any]]:
     """Augment *records* with OpenAlex metadata."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    limiter = RateLimiter(rate=2, burst=5)
-    retries = RetryConfig()
-    retrying = Retrying(
-        stop=stop_after_attempt(retries.max),
-        wait=wait_exponential(multiplier=1, exp_base=retries.backoff, min=1),
-        retry=retry_if_exception_type(httpx.HTTPError),
-        reraise=True,
-    )
+    limiter = rate_limiter or RateLimiter(rate=2, burst=5)
+    retry_cfg = retries or RetryConfig()
+    retrying = _openalex_retrying(retry_cfg)
+
+    impact_enabled = bool(impact_factor and impact_factor.enabled)
+    impact_index: ImpactFactorIndex | None = None
+    if impact_enabled and impact_factor:
+        impact_index = _load_impact_factor_index(impact_factor)
 
     enriched: List[Dict[str, Any]] = []
     with Cache(CACHE_DIR) as cache:
@@ -353,7 +564,14 @@ def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> L
             for record in records:
                 identifier = best_identifier(record)  # powinien preferować DOI
                 if not identifier:
-                    LOGGER.debug("OpenAlex: no identifier for record (title=%r)", record.get("title"))
+                    LOGGER.debug(
+                        "OpenAlex: no identifier for record (title=%r)", record.get("title")
+                    )
+                    if impact_enabled and impact_factor and impact_index is not None:
+                        record = {
+                            **record,
+                            **_impact_factor_payload({}, record, impact_index, impact_factor),
+                        }
                     enriched.append(record)
                     continue
 
@@ -375,6 +593,11 @@ def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> L
                     cache.set(cache_key, metadata, expire=60 * 60 * 24 * 7)
 
                 if not metadata:
+                    if impact_enabled and impact_factor and impact_index is not None:
+                        record = {
+                            **record,
+                            **_impact_factor_payload({}, record, impact_index, impact_factor),
+                        }
                     enriched.append(record)
                     continue
 
@@ -388,6 +611,29 @@ def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> L
                 oa = metadata.get("open_access") or {}
                 merged.is_oa = bool(oa.get("is_oa"))
 
+                primary_location = metadata.get("primary_location") or {}
+                if not isinstance(primary_location, dict):
+                    primary_location = {}
+
+                source = primary_location.get("source") or {}
+                if not isinstance(source, dict):
+                    source = {}
+
+                host = metadata.get("host_venue") or {}
+                if not isinstance(host, dict):
+                    host = {}
+
+                venue_type = source.get("type")
+                merged.venue_type = venue_type if isinstance(venue_type, str) else None
+
+                is_core_listed = source.get("is_core")
+                merged.is_core_listed = bool(is_core_listed) if is_core_listed is not None else None
+
+                publisher = source.get("publisher") or host.get("publisher")
+                merged.publisher = (
+                    publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
+                )
+
                 # --- venue & CORE ranking resolution (FIXED ORDER) ---
                 core_lookup = extract_venue_candidates(metadata, record)
                 venue_name = core_lookup.get("venue_name")
@@ -398,7 +644,7 @@ def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> L
 
                 merged.host_venue = venue_name
 
-                LOGGER.info(
+                LOGGER.debug(
                     "CORE query: venue_name=%r venue_acronym=%r eligible=%s reasons=%s raw=%s",
                     venue_name,
                     venue_acronym,
@@ -414,6 +660,10 @@ def enrich_with_openalex(records: List[Dict[str, Any]], mailto: str | None) -> L
                     )
                 else:
                     merged.core_rank = None
+
+                if impact_enabled and impact_factor and impact_index is not None:
+                    payload = _impact_factor_payload(metadata, record, impact_index, impact_factor)
+                    merged = merged.model_copy(update=payload)
 
                 # do extra dokładamy cały surowy payload z OpenAlex
                 prev_extra = record.get("extra") or {}
@@ -488,13 +738,16 @@ def _resolve_openalex_id(
         params["mailto"] = mailto
 
     if doi:
+
         def execute_direct() -> httpx.Response:
             limiter.acquire()
             # OpenAlex akceptuje i 'doi:10.123/abc' i pełny URL doi
             return client.get(f"/works/doi:{doi}", params=params)
 
         try:
-            resp = retrying(lambda: (r := execute_direct(), r.raise_for_status(), r)[0])  # noqa: E731
+            resp = retrying(
+                lambda: (r := execute_direct(), r.raise_for_status(), r)[0]
+            )  # noqa: E731
             # jeśli jest 200, mamy komplet
             payload = resp.json()
             work_id = payload.get("id")
@@ -502,7 +755,7 @@ def _resolve_openalex_id(
                 return work_id.split("/")[-1]
         except httpx.HTTPStatusError as exc:
             # 404 przy direct → spróbuj filter=doi:...
-            if exc.response.status_code != 404:
+            if exc.response.status_code not in (404, 410):
                 raise
 
         # Fallback na filter=doi

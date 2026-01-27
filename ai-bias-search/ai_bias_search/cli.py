@@ -3,7 +3,7 @@
 import itertools
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import typer
@@ -32,6 +32,12 @@ from ai_bias_search.utils.rate_limit import RateLimiter
 LOGGER = configure_logging()
 app = typer.Typer(add_completion=False)
 
+CONFIG_OPTION = typer.Option(..., help="Path to YAML configuration file.")
+COLLECT_TIMESTAMP_OPTION = typer.Option(None, help="Specific collection timestamp to process.")
+ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to evaluate.")
+METRICS_TIMESTAMP_OPTION = typer.Option(None, help="Specific metrics timestamp to include.")
+REPORT_ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to use.")
+
 
 def _load_env() -> None:
     load_dotenv()
@@ -43,9 +49,11 @@ def _load_app_config(config_path: Path) -> AppConfig:
     return config
 
 
-def _instantiate_connector(name: str, config: AppConfig) -> object:
+def _instantiate_connector(name: str, config: AppConfig) -> Any:
     connector_cls = get_connector(name)
-    rate_limit_cfg: Optional[RateLimitConfig] = config.rate_limit.get(name) if config.rate_limit else None
+    rate_limit_cfg: Optional[RateLimitConfig] = (
+        config.rate_limit.get(name) if config.rate_limit else None
+    )
     limiter = None
     if rate_limit_cfg:
         limiter = RateLimiter(rate=rate_limit_cfg.rps, burst=rate_limit_cfg.burst)
@@ -67,7 +75,7 @@ def _latest_file(directory: Path, pattern: str) -> Optional[Path]:
 @app.command()
 def collect(
     *,
-    config: Path = typer.Option(..., help="Path to YAML configuration file."),
+    config: Path = CONFIG_OPTION,
 ) -> None:
     """Collect search results from configured platforms."""
 
@@ -107,10 +115,8 @@ def collect(
 @app.command()
 def enrich(
     *,
-    config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    run_timestamp: Optional[str] = typer.Option(
-        None, help="Specific collection timestamp to process."
-    ),
+    config: Path = CONFIG_OPTION,
+    run_timestamp: Optional[str] = COLLECT_TIMESTAMP_OPTION,
 ) -> None:
     """Enrich collected records with OpenAlex metadata and store as Parquet."""
 
@@ -119,10 +125,12 @@ def enrich(
     records: List[dict] = []
     for platform in app_config.platforms:
         raw_dir = Path("data/raw") / platform
-        if run_timestamp:
-            raw_path = raw_dir / f"{run_timestamp}.jsonl"
-        else:
-            raw_path = _latest_file(raw_dir, "*.jsonl")
+        raw_path: Path | None
+        raw_path = (
+            raw_dir / f"{run_timestamp}.jsonl"
+            if run_timestamp
+            else _latest_file(raw_dir, "*.jsonl")
+        )
         if raw_path is None or not raw_path.exists():
             LOGGER.warning("No raw data found for %s", platform)
             continue
@@ -132,7 +140,17 @@ def enrich(
         LOGGER.error("No records available for enrichment")
         raise typer.Exit(code=1)
 
-    enriched = enrich_with_openalex(records, app_config.openalex_mailto)
+    openalex_rate = app_config.rate_limit.get("openalex") if app_config.rate_limit else None
+    enrich_limiter = (
+        RateLimiter(rate=openalex_rate.rps, burst=openalex_rate.burst) if openalex_rate else None
+    )
+    enriched = enrich_with_openalex(
+        records,
+        app_config.openalex_mailto,
+        app_config.impact_factor,
+        rate_limiter=enrich_limiter,
+        retries=app_config.retries,
+    )
     timestamp = utc_timestamp()
     output_path = Path("data/enriched") / f"{timestamp}.parquet"
     write_parquet(output_path, enriched)
@@ -150,7 +168,9 @@ def _pairwise_metrics(frame: pd.DataFrame, platforms: List[str]) -> Dict[str, Di
                 [record.get("doi") for record in l_records],
                 [record.get("doi") for record in r_records],
             ),
-            "overlap_at_k": overlap_at_k(l_records, r_records, k=min(len(l_records), len(r_records))),
+            "overlap_at_k": overlap_at_k(
+                l_records, r_records, k=min(len(l_records), len(r_records))
+            ),
             "rbo": rbo(l_records, r_records),
         }
     return metrics
@@ -159,26 +179,28 @@ def _pairwise_metrics(frame: pd.DataFrame, platforms: List[str]) -> Dict[str, Di
 @app.command()
 def eval(
     *,
-    config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    run_timestamp: Optional[str] = typer.Option(
-        None, help="Specific enrichment timestamp to evaluate."
-    ),
+    config: Path = CONFIG_OPTION,
+    run_timestamp: Optional[str] = ENRICHED_TIMESTAMP_OPTION,
 ) -> None:
     """Compute evaluation metrics and store them as JSON."""
 
     _load_env()
     _ = _load_app_config(config)
     enriched_dir = Path("data/enriched")
-    if run_timestamp:
-        enriched_path = enriched_dir / f"{run_timestamp}.parquet"
-    else:
-        enriched_path = _latest_file(enriched_dir, "*.parquet")
+    enriched_path: Path | None
+    enriched_path = (
+        enriched_dir / f"{run_timestamp}.parquet"
+        if run_timestamp
+        else _latest_file(enriched_dir, "*.parquet")
+    )
     if enriched_path is None or not enriched_path.exists():
         LOGGER.error("No enriched dataset available")
         raise typer.Exit(code=1)
 
     frame = read_parquet(enriched_path)
-    platforms = sorted(frame["platform"].dropna().unique().tolist()) if "platform" in frame.columns else []
+    platforms = (
+        sorted(frame["platform"].dropna().unique().tolist()) if "platform" in frame.columns else []
+    )
 
     pairwise = _pairwise_metrics(frame, platforms) if platforms else {}
     bias_metrics = compute_bias_metrics(frame)
@@ -194,13 +216,9 @@ def eval(
 @app.command()
 def report(
     *,
-    config: Path = typer.Option(..., help="Path to YAML configuration file."),
-    metrics_timestamp: Optional[str] = typer.Option(
-        None, help="Specific metrics timestamp to include."
-    ),
-    enriched_timestamp: Optional[str] = typer.Option(
-        None, help="Specific enrichment timestamp to use."
-    ),
+    config: Path = CONFIG_OPTION,
+    metrics_timestamp: Optional[str] = METRICS_TIMESTAMP_OPTION,
+    enriched_timestamp: Optional[str] = REPORT_ENRICHED_TIMESTAMP_OPTION,
 ) -> None:
     """Generate an HTML report for the latest metrics."""
 
@@ -208,16 +226,15 @@ def report(
     _ = _load_app_config(config)
 
     metrics_dir = Path("results/metrics")
-    if metrics_timestamp:
-        chosen_metrics_dir = metrics_dir
-    else:
-        chosen_metrics_dir = metrics_dir
+    chosen_metrics_dir = metrics_dir
 
     enriched_dir = Path("data/enriched")
-    if enriched_timestamp:
-        enriched_path = enriched_dir / f"{enriched_timestamp}.parquet"
-    else:
-        enriched_path = _latest_file(enriched_dir, "*.parquet")
+    enriched_path: Path | None
+    enriched_path = (
+        enriched_dir / f"{enriched_timestamp}.parquet"
+        if enriched_timestamp
+        else _latest_file(enriched_dir, "*.parquet")
+    )
 
     if enriched_path is None or not enriched_path.exists():
         LOGGER.error("No enriched dataset available for reporting")

@@ -13,3 +13,26 @@ rate_limit:
 retries:
   max: 3
   backoff: 1.5
+impact_factor:
+  enabled: true
+  xlsx_path: "data/vendor/jif.xlsx"
+  sheet_name: null
+  title_column: "Journal Name"
+  jif_column: "JIF 2024"
+  year_column: "JCR Year"
+  publisher_column: "Publisher"
+  issn_column: "ISSN"
+  eissn_column: "eISSN"
+  total_cites_column: "Total Cites"
+  citable_items_column: "Citable Items"
+  total_articles_column: "Total Articles"
+  jif_5y_column: "5-Year JIF"
+  jif_wo_self_cites_column: "JIF Without Self-Cites"
+  jci_column: "JCI"
+  quartile_column: "JIF Quartile"
+  jif_rank_column: "JIF Rank"
+  allow_fuzzy: false
+  fuzzy_threshold: 98
+  min_title_len: 8
+  max_len_ratio_delta: 0.2
+  reject_ambiguous: true
