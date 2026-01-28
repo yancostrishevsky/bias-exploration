@@ -15,7 +15,7 @@ from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_expo
 
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import doi_from_url, normalise_doi
-from ai_bias_search.utils.logging import configure_logging
+from ai_bias_search.utils.logging import configure_logging, mask_sensitive
 from ai_bias_search.utils.models import Record
 from ai_bias_search.utils.rate_limit import RateLimiter
 
@@ -70,6 +70,21 @@ def _parse_year(value: object) -> int | None:
     return None
 
 
+def _clean_api_key(value: str) -> str:
+    key = value.strip()
+    if len(key) >= 2 and ((key[0] == key[-1] == '"') or (key[0] == key[-1] == "'")):
+        key = key[1:-1].strip()
+    return key
+
+
+def _toggle_trailing_slash(path: str) -> str:
+    if not path:
+        return path
+    if path.endswith("/"):
+        return path.rstrip("/")
+    return f"{path}/"
+
+
 def _extract_items(payload: object) -> list[dict]:
     if not isinstance(payload, dict):
         return []
@@ -116,6 +131,18 @@ def _is_transient_overload_payload(payload: dict) -> bool:
         return True
 
     return False
+
+
+def _has_results(payload: dict) -> bool:
+    return bool(_extract_items(payload))
+
+
+def _total_hits(payload: dict) -> int | None:
+    for key in ("total_hits", "totalHits"):
+        value = payload.get(key)
+        if isinstance(value, int):
+            return value
+    return None
 
 
 def _authors_from_item(item: dict) -> list[str]:
@@ -200,15 +227,20 @@ class CoreConnector:
         api_key = os.getenv("CORE_API_KEY")
         if not api_key:
             raise ConnectorError("Set CORE_API_KEY in .env to enable this connector")
-        self.api_key = api_key
+        self.api_key = _clean_api_key(api_key)
 
-        base_url = os.getenv("CORE_API_BASE_URL", "https://api.core.ac.uk/v3")
-        # CORE v3 commonly redirects `/search/works` -> `/search/works/`.
-        self.search_path = os.getenv("CORE_SEARCH_PATH", "/search/works/")
+        base_url = os.getenv("CORE_API_BASE_URL", "https://api.core.ac.uk/v3").strip()
+        raw_search_path = os.getenv("CORE_SEARCH_PATH", "/search/works").strip()
+        # Swagger docs use no trailing slash; normalise to avoid redirect edge-cases.
+        self.search_path = (raw_search_path.rstrip("/") or "/search/works").strip()
         self.query_param = os.getenv("CORE_QUERY_PARAM", "q")
         self.limit_param = os.getenv("CORE_LIMIT_PARAM", "limit")
         self.offset_param = os.getenv("CORE_OFFSET_PARAM", "offset")
         self.max_page_size = int(os.getenv("CORE_MAX_PAGE_SIZE", "25"))
+        self.search_method = os.getenv("CORE_SEARCH_METHOD", "AUTO").strip().upper()
+        if self.search_method not in {"AUTO", "GET", "POST"}:
+            LOGGER.warning("Unknown CORE_SEARCH_METHOD=%r; defaulting to AUTO", self.search_method)
+            self.search_method = "AUTO"
         self.auth_header = os.getenv("CORE_AUTH_HEADER", "Authorization")
         self.auth_prefix = os.getenv("CORE_AUTH_PREFIX", "Bearer")
         self.user_agent = os.getenv(
@@ -223,7 +255,7 @@ class CoreConnector:
         )
         self.retrying = Retrying(
             stop=stop_after_attempt(self.retries.max),
-            wait=wait_exponential(multiplier=1, exp_base=self.retries.backoff, min=1),
+            wait=wait_exponential(multiplier=1, exp_base=self.retries.backoff, min=1, max=10),
             retry=retry_if_exception(_is_retryable_core_error),
             reraise=True,
         )
@@ -253,7 +285,29 @@ class CoreConnector:
             page_params[self.limit_param] = min(per_page, k - len(records))
             page_params[self.offset_param] = offset
 
-            payload = self._get(self.search_path, page_params)
+            try:
+                payload = self._get(self.search_path, page_params)
+            except ConnectorError as exc:
+                if records:
+                    LOGGER.warning(
+                        "CORE page fetch failed after collecting %d records; returning partial "
+                        "results (offset=%s limit=%s): %s",
+                        len(records),
+                        offset,
+                        page_params[self.limit_param],
+                        exc,
+                    )
+                    break
+                raise
+
+            if _is_transient_overload_payload(payload):
+                LOGGER.warning(
+                    "CORE backend reported shard failures (successful=%r total=%r failed=%r); "
+                    "using any returned results",
+                    payload.get("successful"),
+                    payload.get("total"),
+                    payload.get("failed"),
+                )
             items = _extract_items(payload)
             if not items:
                 break
@@ -280,6 +334,13 @@ class CoreConnector:
                 records.append(record)
                 added += 1
 
+            requested = int(page_params[self.limit_param])
+            total_hits = _total_hits(payload)
+            if len(items) < requested and (
+                total_hits is None or (offset + len(items)) >= total_hits
+            ):
+                break
+
             offset += len(items)
             if added == 0:
                 break
@@ -297,18 +358,99 @@ class CoreConnector:
             headers[self.auth_header] = self.api_key
 
         def execute() -> Dict[str, Any]:
-            self.rate_limiter.acquire()
-            response = self.client.get(path, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            methods: list[str]
+            if self.search_method == "AUTO":
+                methods = ["GET", "POST"]
+            else:
+                methods = [self.search_method]
+
+            candidate_paths = [path]
+            alt_path = _toggle_trailing_slash(path)
+            if alt_path and alt_path != path:
+                candidate_paths.append(alt_path)
+
+            retryable_exc: BaseException | None = None
+            non_retryable_exc: BaseException | None = None
+            for method in methods:
+                if method == "POST":
+                    # CORE routes commonly only support POST without a trailing slash.
+                    post_path = (path.rstrip("/") or path).strip()
+                    method_paths = [post_path]
+                else:
+                    method_paths = candidate_paths
+
+                for candidate_path in method_paths:
+                    try:
+                        self.rate_limiter.acquire()
+                        LOGGER.debug(
+                            "core request method=%s path=%s params=%s headers=%s",
+                            method,
+                            candidate_path,
+                            params,
+                            mask_sensitive(headers),
+                        )
+                        if method == "GET":
+                            query_params = dict(params)
+                            query_params.setdefault("scroll", "false")
+                            query_params.setdefault("stats", "false")
+                            response = self.client.get(
+                                candidate_path, params=query_params, headers=headers
+                            )
+                        elif method == "POST":
+                            body = dict(params)
+                            body.setdefault("scroll", False)
+                            body.setdefault("stats", False)
+                            response = self.client.post(candidate_path, json=body, headers=headers)
+                        else:  # pragma: no cover - defensive guard
+                            raise ConnectorError(f"Unsupported CORE search method: {method}")
+
+                        response.raise_for_status()
+                        data = response.json()
+                        if method == "GET" and candidate_path != path and path == self.search_path:
+                            self.search_path = candidate_path
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        status = exc.response.status_code
+                        if status in (408, 429) or 500 <= status <= 599:
+                            retryable_exc = exc
+                        else:
+                            non_retryable_exc = exc
+
+                        if status in (404, 405) or 500 <= status <= 599:
+                            continue
+                        raise
+                else:
+                    continue
+                break
+            else:
+                if retryable_exc is not None:
+                    raise retryable_exc
+                if non_retryable_exc is not None:
+                    raise non_retryable_exc
+                raise ConnectorError("CORE request failed without a response")
+
             if not isinstance(data, dict):
                 raise ConnectorError("CORE response is not a JSON object")
-            if _is_transient_overload_payload(data):
-                raise CoreTransientError("CORE backend overloaded (partial failures in response)")
+            if _is_transient_overload_payload(data) and not _has_results(data):
+                raise CoreTransientError("CORE backend overloaded (no results returned)")
             return data
 
         try:
             return self.retrying(execute)
+        except httpx.HTTPStatusError as exc:
+            snippet: str | None = None
+            try:
+                text = exc.response.text
+                snippet = text[:300] if text else None
+            except Exception:
+                snippet = None
+            method = getattr(exc.request, "method", None)
+            details = f"CORE request failed: {exc}"
+            if method:
+                details = f"CORE request failed ({method}): {exc}"
+            if snippet:
+                details = f"{details} (body={snippet!r})"
+            raise ConnectorError(details) from exc
         except httpx.HTTPError as exc:
             raise ConnectorError(f"CORE request failed: {exc}") from exc
         except CoreTransientError as exc:
@@ -320,7 +462,11 @@ class CoreConnector:
             title = ""
 
         year = _parse_year(
-            item.get("year") or item.get("publicationYear") or item.get("publishedDate")
+            item.get("year")
+            or item.get("yearPublished")
+            or item.get("publicationYear")
+            or item.get("publishedDate")
+            or item.get("publicationDate")
         )
 
         source = item.get("venue") or item.get("journal") or item.get("publisher")

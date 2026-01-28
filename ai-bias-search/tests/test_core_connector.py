@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 import httpx
@@ -31,6 +32,7 @@ def test_core_connector_paginates_and_normalizes(monkeypatch: pytest.MonkeyPatch
 
         if offset == 0:
             body = {
+                "total_hits": 2,
                 "results": [
                     {
                         "id": "core:1",
@@ -47,6 +49,7 @@ def test_core_connector_paginates_and_normalizes(monkeypatch: pytest.MonkeyPatch
 
         if offset == 1 and limit >= 1:
             body = {
+                "total_hits": 2,
                 "results": [
                     {
                         "id": "core:2",
@@ -158,3 +161,169 @@ def test_core_connector_retries_on_es_overload(monkeypatch: pytest.MonkeyPatch) 
     assert attempts["count"] == 2
     assert len(records) == 1
     assert records[0]["title"] == "Recovered"
+
+
+def test_core_connector_falls_back_to_post_on_server_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORE_API_KEY", "test-key")
+    monkeypatch.setenv("CORE_API_BASE_URL", "https://api.core.example")
+    monkeypatch.setenv("CORE_SEARCH_PATH", "/search/works")
+    monkeypatch.setenv("CORE_SEARCH_METHOD", "AUTO")
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        assert request.headers.get("Authorization") == "Bearer test-key"
+
+        if request.method == "GET":
+            return httpx.Response(500, json={"error": "boom"}, request=request)
+
+        assert request.method == "POST"
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["q"] == "test query"
+        assert body["limit"] == 1
+        assert body["offset"] == 0
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "core:1",
+                        "title": "OK",
+                        "doi": "10.1/x",
+                        "yearPublished": 2020,
+                    }
+                ]
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(base_url="https://api.core.example", transport=transport)
+    connector = CoreConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=1, backoff=1.0),
+        client=client,
+    )
+
+    records = connector.search("test query", k=1)
+    assert len(records) == 1
+    assert records[0]["title"] == "OK"
+    assert calls[0] == "GET"
+    assert "POST" in calls
+
+
+def test_core_connector_accepts_partial_results_with_failures(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("CORE_API_KEY", "test-key")
+    monkeypatch.setenv("CORE_API_BASE_URL", "https://api.core.example")
+    monkeypatch.setenv("CORE_SEARCH_PATH", "/search/works/")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 20,
+                "successful": 10,
+                "failed": 10,
+                "message": "es_rejected_execution_exception: rejected execution",
+                "results": [
+                    {"id": "core:1", "title": "Partial", "doi": "10.1/x", "year": 2020}
+                ],
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(base_url="https://api.core.example", transport=transport)
+    connector = CoreConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=1, backoff=1.0),
+        client=client,
+    )
+
+    caplog.set_level("WARNING")
+    records = connector.search("test query", k=1)
+    assert len(records) == 1
+    assert records[0]["title"] == "Partial"
+    assert any("shard failures" in record.message for record in caplog.records)
+
+
+def test_core_connector_returns_partial_results_when_second_page_fails(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("CORE_API_KEY", "test-key")
+    monkeypatch.setenv("CORE_API_BASE_URL", "https://api.core.example")
+    monkeypatch.setenv("CORE_SEARCH_PATH", "/search/works/")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            body = json.loads(request.content.decode("utf-8"))
+            offset = int(body.get("offset", 0))
+        else:
+            params = dict(request.url.params)
+            offset = int(params.get("offset", "0"))
+        if offset == 0:
+            return httpx.Response(
+                200,
+                json={
+                    "total_hits": 10,
+                    "results": [
+                        {"id": "core:1", "title": "One", "doi": "10.1/one", "year": 2020},
+                        {"id": "core:2", "title": "Two", "doi": "10.1/two", "year": 2020},
+                    ]
+                },
+                request=request,
+            )
+        return httpx.Response(500, json={"error": "boom"}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(base_url="https://api.core.example", transport=transport)
+    connector = CoreConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=1, backoff=1.0),
+        client=client,
+    )
+
+    caplog.set_level("WARNING")
+    records = connector.search("test query", k=5)
+    assert [record["title"] for record in records] == ["One", "Two"]
+    assert any("returning partial results" in record.message for record in caplog.records)
+
+
+def test_core_connector_stops_on_short_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORE_API_KEY", "test-key")
+    monkeypatch.setenv("CORE_API_BASE_URL", "https://api.core.example")
+    monkeypatch.setenv("CORE_SEARCH_PATH", "/search/works/")
+
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        offset = int(params.get("offset", "0"))
+        calls.append(offset)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"id": "core:1", "title": "One", "doi": "10.1/one", "year": 2020},
+                    {"id": "core:2", "title": "Two", "doi": "10.1/two", "year": 2020},
+                ]
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(base_url="https://api.core.example", transport=transport)
+    connector = CoreConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=1, backoff=1.0),
+        client=client,
+    )
+
+    records = connector.search("test query", k=5)
+    assert [record["title"] for record in records] == ["One", "Two"]
+    assert calls == [0]
