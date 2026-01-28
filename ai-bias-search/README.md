@@ -92,6 +92,7 @@ Environment variables currently supported:
 - `PERPLEXITY_API_KEY`
 - `CONSENSUS_API_KEY`
 - `SCITE_API_KEY`
+- `CORE_API_KEY`
 - `LOG_LEVEL` (optional; defaults to `INFO`)
 - `CORE_RANKINGS_PATH` (optional; defaults to `CORE.csv`)
 

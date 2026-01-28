@@ -7,6 +7,9 @@ rate_limit:
   openalex:
     rps: 2
     burst: 5
+  core:
+    rps: 1
+    burst: 2
   semanticscholar:
     rps: 1
     burst: 2
