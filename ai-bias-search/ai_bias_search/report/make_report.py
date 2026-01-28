@@ -15,18 +15,6 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from ai_bias_search.evaluation.biases import core_ranking_table
 from ai_bias_search.utils.io import read_parquet
 from ai_bias_search.utils.logging import configure_logging
-from ai_bias_search.viz.plots import (
-    plot_language_distribution,
-    plot_open_access_share,
-    plot_pairwise_jaccard,
-    plot_platform_counts,
-    plot_publisher_hhi,
-    plot_publisher_hhi_per_platform,
-    plot_rank_vs_citations,
-    plot_recency_by_platform,
-    plot_year_distribution,
-    plot_year_distribution_by_platform,
-)
 
 LOGGER = configure_logging()
 
@@ -108,6 +96,20 @@ def _parse_metrics_timestamp(stem: str) -> datetime | None:
 
 def _generate_plots(frame: pd.DataFrame, metrics: Dict[str, dict]) -> List[Dict[str, str]]:
     """Render available plots to base64-encoded PNG strings for embedding."""
+
+    # Import lazily to avoid importing matplotlib during `collect` / `enrich`.
+    from ai_bias_search.viz.plots import (
+        plot_language_distribution,
+        plot_open_access_share,
+        plot_pairwise_jaccard,
+        plot_platform_counts,
+        plot_publisher_hhi,
+        plot_publisher_hhi_per_platform,
+        plot_rank_vs_citations,
+        plot_recency_by_platform,
+        plot_year_distribution,
+        plot_year_distribution_by_platform,
+    )
 
     plot_specs = [
         ("platform_mix", "Records per platform", lambda path: plot_platform_counts(frame, path)),

@@ -24,7 +24,13 @@ from .base import ConnectorError
 LOGGER = configure_logging()
 
 
+class CoreTransientError(ConnectorError):
+    """Retryable error for transient CORE backend failures."""
+
+
 def _is_retryable_core_error(exc: BaseException) -> bool:
+    if isinstance(exc, CoreTransientError):
+        return True
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status in (401, 403, 404):
@@ -86,6 +92,30 @@ def _extract_items(payload: object) -> list[dict]:
         return [item for item in hits if isinstance(item, dict)]
 
     return []
+
+
+def _is_transient_overload_payload(payload: dict) -> bool:
+    """Detect 200-OK responses that still indicate a transient backend overload."""
+
+    message = payload.get("message")
+    if isinstance(message, str):
+        lowered = message.lower()
+        if "es_rejected_execution_exception" in lowered:
+            return True
+        if "rejected execution" in lowered:
+            return True
+
+    for key in ("failures", "errors"):
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            return True
+
+    total = payload.get("total")
+    successful = payload.get("successful")
+    if isinstance(total, int) and isinstance(successful, int) and successful < total:
+        return True
+
+    return False
 
 
 def _authors_from_item(item: dict) -> list[str]:
@@ -173,10 +203,12 @@ class CoreConnector:
         self.api_key = api_key
 
         base_url = os.getenv("CORE_API_BASE_URL", "https://api.core.ac.uk/v3")
-        self.search_path = os.getenv("CORE_SEARCH_PATH", "/search/works")
+        # CORE v3 commonly redirects `/search/works` -> `/search/works/`.
+        self.search_path = os.getenv("CORE_SEARCH_PATH", "/search/works/")
         self.query_param = os.getenv("CORE_QUERY_PARAM", "q")
         self.limit_param = os.getenv("CORE_LIMIT_PARAM", "limit")
         self.offset_param = os.getenv("CORE_OFFSET_PARAM", "offset")
+        self.max_page_size = int(os.getenv("CORE_MAX_PAGE_SIZE", "25"))
         self.auth_header = os.getenv("CORE_AUTH_HEADER", "Authorization")
         self.auth_prefix = os.getenv("CORE_AUTH_PREFIX", "Bearer")
         self.user_agent = os.getenv(
@@ -184,7 +216,11 @@ class CoreConnector:
             "ai-bias-search/0.1 (+contact@example.com)",
         )
 
-        self.client = client or httpx.Client(base_url=base_url, timeout=30.0)
+        self.client = client or httpx.Client(
+            base_url=base_url,
+            timeout=30.0,
+            follow_redirects=True,
+        )
         self.retrying = Retrying(
             stop=stop_after_attempt(self.retries.max),
             wait=wait_exponential(multiplier=1, exp_base=self.retries.backoff, min=1),
@@ -205,7 +241,7 @@ class CoreConnector:
         request_params: Dict[str, Any] = dict(params or {})
         request_params[self.query_param] = query
 
-        per_page = min(int(request_params.pop(self.limit_param, k)), 100, k)
+        per_page = min(int(request_params.pop(self.limit_param, k)), self.max_page_size, k)
         offset = int(request_params.pop(self.offset_param, 0))
 
         LOGGER.info("core.search query=%s k=%s", query, k)
@@ -267,12 +303,16 @@ class CoreConnector:
             data = response.json()
             if not isinstance(data, dict):
                 raise ConnectorError("CORE response is not a JSON object")
+            if _is_transient_overload_payload(data):
+                raise CoreTransientError("CORE backend overloaded (partial failures in response)")
             return data
 
         try:
             return self.retrying(execute)
         except httpx.HTTPError as exc:
             raise ConnectorError(f"CORE request failed: {exc}") from exc
+        except CoreTransientError as exc:
+            raise ConnectorError(str(exc)) from exc
 
     def _normalize_item(self, item: dict, *, rank: int) -> Dict[str, Any]:
         title = item.get("title") or item.get("display_name") or item.get("displayName")

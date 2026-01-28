@@ -110,3 +110,51 @@ def test_core_connector_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
         assert "CORE_API_KEY" in str(exc)
     else:
         raise AssertionError("Expected connector initialization to fail without CORE_API_KEY")
+
+
+def test_core_connector_retries_on_es_overload(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CORE_API_KEY", "test-key")
+    monkeypatch.setenv("CORE_API_BASE_URL", "https://api.core.example")
+    monkeypatch.setenv("CORE_SEARCH_PATH", "/search/works")
+
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            # 200 OK but partial shard failures -> retryable transient overload.
+            return httpx.Response(
+                200,
+                json={
+                    "total": 20,
+                    "successful": 15,
+                    "failed": 5,
+                    "message": (
+                        "es_rejected_execution_exception: rejected execution "
+                        "on search thread pool"
+                    ),
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"id": "core:1", "title": "Recovered", "doi": "10.1/x", "year": 2020}
+                ]
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(base_url="https://api.core.example", transport=transport)
+    connector = CoreConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=2, backoff=1.0),
+        client=client,
+    )
+
+    records = connector.search("test query", k=1)
+    assert attempts["count"] == 2
+    assert len(records) == 1
+    assert records[0]["title"] == "Recovered"
