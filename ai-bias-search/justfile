@@ -6,7 +6,10 @@ CONFIG := "config.yaml"
 
 setup:
     uv venv --python 3.12
-    uv pip install -e '.[dev]'
+    # `uv pip install -e .` does not install Poetry dev-group deps, so install the
+    # dev tools explicitly to keep `just setup` consistent with the README.
+    uv pip install -e .
+    uv pip install pytest pytest-mock ruff black mypy
 
 fmt:
     ruff check --fix .
