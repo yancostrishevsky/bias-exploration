@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Mapping, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 
 def jaccard(set_a: Iterable[str], set_b: Iterable[str]) -> float:

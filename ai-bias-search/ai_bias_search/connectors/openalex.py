@@ -13,8 +13,7 @@ from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import Record
 from ai_bias_search.utils.rate_limit import RateLimiter
 
-from .base import ConnectorError, SearchConnector
-
+from .base import ConnectorError
 
 LOGGER = configure_logging()
 
@@ -84,7 +83,8 @@ class OpenAlexConnector:
             record = Record(
                 title=item.get("display_name", ""),
                 doi=doi,
-                url=(item.get("primary_location", {}) or {}).get("landing_page_url") or item.get("id"),
+                url=(item.get("primary_location", {}) or {}).get("landing_page_url")
+                or item.get("id"),
                 rank=idx,
                 raw_id=item.get("id"),
                 source=(item.get("host_venue", {}) or {}).get("display_name"),
@@ -98,7 +98,9 @@ class OpenAlexConnector:
     def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         def execute() -> Dict[str, Any]:
             self.rate_limiter.acquire()
-            response = self.client.get(path, params=params, headers={"User-Agent": "ai-bias-search/0.1"})
+            response = self.client.get(
+                path, params=params, headers={"User-Agent": "ai-bias-search/0.1"}
+            )
             response.raise_for_status()
             return response.json()
 

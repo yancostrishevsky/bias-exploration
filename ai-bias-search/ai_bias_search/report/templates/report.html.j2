@@ -136,6 +136,42 @@
     {% endif %}
   </section>
 
+  {% if jcr_summary %}
+  <section>
+    <h2>JCR / Impact Factor Summary</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Eligible records</th>
+          <th>Mean impact factor</th>
+          <th>Median impact factor</th>
+          <th>Median JCI</th>
+          <th>Q1 share</th>
+          <th>Top publishers</th>
+          <th>Missing count</th>
+          <th>Missing share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in jcr_summary %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
+          <td>{{ "%.2f"|format(row.mean) if row.mean is not none else "N/A" }}</td>
+          <td>{{ "%.2f"|format(row.median) if row.median is not none else "N/A" }}</td>
+          <td>{{ "%.2f"|format(row.median_jci) if row.median_jci is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.q1_share * 100) if row.q1_share is not none else "N/A" }}</td>
+          <td>{{ row.top_publishers if row.top_publishers is not none else "N/A" }}</td>
+          <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
+          <td>{{ "%.1f%%"|format(row.missing_share * 100) if row.missing_share is not none else "N/A" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
   <section>
     <h2>Sample Records</h2>
     {% if table %}

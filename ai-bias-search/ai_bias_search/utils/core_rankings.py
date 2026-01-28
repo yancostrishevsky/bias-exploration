@@ -11,12 +11,9 @@ from typing import Dict, Iterable, Optional, Tuple
 
 from ai_bias_search.utils.logging import configure_logging
 
-
 LOGGER = configure_logging()
 
-DEFAULT_CORE_PATH = (
-    Path(__file__).resolve().parents[2] / "CORE.csv"
-)
+DEFAULT_CORE_PATH = Path(__file__).resolve().parents[2] / "CORE.csv"
 
 ALLOWED_RANKS = {"A*", "A", "B", "C"}
 RANK_ORDER = {"A*": 4, "A": 3, "B": 2, "C": 1, None: 0}
@@ -67,7 +64,7 @@ def clear_core_rankings_cache() -> None:
 
 def lookup_core_rank(venue_name: str | None, venue_acronym: str | None = None) -> str | None:
     """Lookup the CORE rank for a venue name/acronym (A*, A, B, C)."""
-    LOGGER.info("RAPIDFUZZ_AVAILABLE=%r", RAPIDFUZZ_AVAILABLE)
+    LOGGER.debug("RAPIDFUZZ_AVAILABLE=%r", RAPIDFUZZ_AVAILABLE)
 
     rankings = _load_core_rankings()
     if not rankings.title_map and not rankings.acronym_map:
@@ -91,10 +88,27 @@ def lookup_core_rank(venue_name: str | None, venue_acronym: str | None = None) -
     if matched is None:
         return None
     match_key, score = matched
-    LOGGER.info("CORE fuzzy match for %r -> %r (score=%.1f)", venue_name or venue_acronym, match_key, score)
+    LOGGER.debug(
+        "CORE fuzzy match for %r -> %r (score=%.1f)",
+        venue_name or venue_acronym,
+        match_key,
+        score,
+    )
     if venue_name:
         return rankings.title_map.get(match_key)
     return rankings.acronym_map.get(match_key)
+
+
+def is_known_core_acronym(value: str | None) -> bool:
+    """Return True when *value* appears as an acronym in the CORE index."""
+
+    if not value:
+        return False
+    rankings = _load_core_rankings()
+    if not rankings.acronym_map:
+        return False
+    key = normalize_text(value)
+    return bool(key and key in rankings.acronym_map)
 
 
 def normalize_text(value: str | None, *, strip_parens: bool = True) -> str:
@@ -199,9 +213,8 @@ def _load_core_rankings() -> CoreRankings:
         ranked_rows,
     )
 
-
-    LOGGER.info("Sample CORE acronym keys: %r", list(acronym_map.keys())[:20])
-    LOGGER.info("Sample CORE title keys: %r", list(title_map.keys())[:5])
+    LOGGER.debug("Sample CORE acronym keys: %r", list(acronym_map.keys())[:20])
+    LOGGER.debug("Sample CORE title keys: %r", list(title_map.keys())[:5])
 
     return _CORE_CACHE
 

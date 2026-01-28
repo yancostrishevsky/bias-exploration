@@ -6,15 +6,16 @@ from typing import Dict, Type
 
 from .base import SearchConnector
 from .consensus import ConsensusConnector
+from .core import CoreConnector
 from .openalex import OpenAlexConnector
 from .perplexity import PerplexityConnector
 from .scite import SciteConnector
 from .semanticscholar import SemanticScholarConnector
 
-
 CONNECTOR_REGISTRY: Dict[str, Type[SearchConnector]] = {
     OpenAlexConnector.name: OpenAlexConnector,
     SemanticScholarConnector.name: SemanticScholarConnector,
+    CoreConnector.name: CoreConnector,
     PerplexityConnector.name: PerplexityConnector,
     ConsensusConnector.name: ConsensusConnector,
     SciteConnector.name: SciteConnector,

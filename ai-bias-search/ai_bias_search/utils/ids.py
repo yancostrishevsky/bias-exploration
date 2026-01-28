@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Mapping, Optional
 
-
 DOI_REGEX = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 
 
@@ -28,7 +27,12 @@ def doi_from_url(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
     lowered = url.lower()
-    for prefix in ("https://doi.org/", "http://doi.org/", "http://dx.doi.org/", "https://dx.doi.org/"):
+    for prefix in (
+        "https://doi.org/",
+        "http://doi.org/",
+        "http://dx.doi.org/",
+        "https://dx.doi.org/",
+    ):
         if lowered.startswith(prefix):
             return normalise_doi(url[len(prefix) :])
     return None
