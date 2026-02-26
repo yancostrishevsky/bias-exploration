@@ -5,16 +5,21 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import typer
 from dotenv import load_dotenv
 
 from ai_bias_search.connectors import get_connector
 from ai_bias_search.connectors.base import ConnectorError
+from ai_bias_search.diagnostics.sanity import run_sanity_checks
+from ai_bias_search.enrichment.scopus_rankings import enrich_with_scopus_rankings
 from ai_bias_search.evaluation.biases import compute_bias_metrics
+from ai_bias_search.normalize.records import normalize_records
 from ai_bias_search.evaluation.overlap import jaccard, overlap_at_k
 from ai_bias_search.evaluation.ranking_similarity import rbo
 from ai_bias_search.normalization.openalex_enrich import enrich_with_openalex
+from ai_bias_search.normalization.scopus_enrich import enrich_with_scopus
 from ai_bias_search.report.make_report import generate_report
 from ai_bias_search.utils.config import AppConfig, RateLimitConfig, load_config
 from ai_bias_search.utils.io import (
@@ -37,6 +42,11 @@ COLLECT_TIMESTAMP_OPTION = typer.Option(None, help="Specific collection timestam
 ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to evaluate.")
 METRICS_TIMESTAMP_OPTION = typer.Option(None, help="Specific metrics timestamp to include.")
 REPORT_ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to use.")
+ENRICH_SCOPUS_RANKINGS_OPTION = typer.Option(
+    False,
+    "--enrich-scopus-rankings/--no-enrich-scopus-rankings",
+    help="Enrich records with Scopus Serial Title journal metrics (CiteScore/SJR/SNIP).",
+)
 
 
 def _load_env() -> None:
@@ -60,6 +70,8 @@ def _instantiate_connector(name: str, config: AppConfig) -> Any:
     kwargs: Dict[str, object] = {"rate_limiter": limiter, "retries": config.retries}
     if name == "openalex":
         kwargs["mailto"] = config.openalex_mailto
+    if name == "scopus":
+        kwargs["config"] = config.scopus
     try:
         connector = connector_cls(**kwargs)  # type: ignore[call-arg]
     except TypeError:
@@ -70,6 +82,62 @@ def _instantiate_connector(name: str, config: AppConfig) -> Any:
 def _latest_file(directory: Path, pattern: str) -> Optional[Path]:
     matches = sorted(directory.glob(pattern))
     return matches[-1] if matches else None
+
+
+def _json_compatible(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(_json_compatible(item) for item in value)
+    if isinstance(value, np.generic):
+        return value.item()
+    try:
+        missing = pd.isna(value)
+    except Exception:
+        missing = False
+    if isinstance(missing, (bool, np.bool_)) and bool(missing):
+        return None
+    return value
+
+
+def _merge_canonical_metadata(
+    record: Dict[str, Any],
+    canonical: Dict[str, Any],
+) -> Dict[str, Any]:
+    updated = dict(record)
+
+    citations = canonical.get("citations")
+    updated["citations"] = citations
+    updated["cited_by_count"] = citations
+
+    issn_values = canonical.get("issn")
+    if isinstance(issn_values, list):
+        updated["issn_list"] = issn_values or None
+        if issn_values and not updated.get("issn"):
+            updated["issn"] = issn_values[0]
+        if len(issn_values) > 1 and not updated.get("eissn"):
+            updated["eissn"] = issn_values[1]
+
+    for key in ("publisher", "journal_title", "doc_type", "language"):
+        value = canonical.get(key)
+        current = updated.get(key)
+        if value is None:
+            continue
+        if current is None or (isinstance(current, str) and not current.strip()):
+            updated[key] = value
+
+    if canonical.get("is_oa") is not None and updated.get("is_oa") is None:
+        updated["is_oa"] = canonical["is_oa"]
+
+    updated["journal_match"] = canonical.get("journal_match")
+    updated["metrics_quality"] = canonical.get("metrics_quality")
+    return updated
 
 
 @app.command()
@@ -117,6 +185,7 @@ def enrich(
     *,
     config: Path = CONFIG_OPTION,
     run_timestamp: Optional[str] = COLLECT_TIMESTAMP_OPTION,
+    enrich_scopus_rankings: bool = ENRICH_SCOPUS_RANKINGS_OPTION,
 ) -> None:
     """Enrich collected records with OpenAlex metadata and store as Parquet."""
 
@@ -151,6 +220,26 @@ def enrich(
         rate_limiter=enrich_limiter,
         retries=app_config.retries,
     )
+    scopus_cfg = app_config.scopus if app_config.scopus.enabled else app_config.scopus_enrich
+    if scopus_cfg.enabled:
+        enriched = enrich_with_scopus(
+            enriched,
+            scopus_cfg,
+            retries=app_config.retries,
+        )
+    run_rankings = bool(enrich_scopus_rankings or scopus_cfg.rankings.enabled)
+    if run_rankings:
+        rankings_cfg = scopus_cfg.rankings.model_copy(update={"enabled": True})
+        enriched = enrich_with_scopus_rankings(
+            enriched,
+            cfg=rankings_cfg,
+            retries=app_config.retries,
+        )
+    canonical = normalize_records(enriched)
+    enriched = [
+        _merge_canonical_metadata(record, normalized)
+        for record, normalized in zip(enriched, canonical, strict=False)
+    ]
     timestamp = utc_timestamp()
     output_path = Path("data/enriched") / f"{timestamp}.parquet"
     write_parquet(output_path, enriched)
@@ -198,6 +287,16 @@ def eval(
         raise typer.Exit(code=1)
 
     frame = read_parquet(enriched_path)
+    diagnostics = run_sanity_checks(frame.to_dict(orient="records"))
+    diagnostics_path = Path("results/diagnostics.json")
+    ensure_directory(diagnostics_path)
+    diagnostics_path.write_text(
+        json.dumps(_json_compatible(diagnostics), indent=2),
+        encoding="utf-8",
+    )
+    for warning in diagnostics.get("warnings", []):
+        LOGGER.warning("Sanity check warning: %s", warning)
+
     platforms = (
         sorted(frame["platform"].dropna().unique().tolist()) if "platform" in frame.columns else []
     )
@@ -208,8 +307,13 @@ def eval(
     timestamp = utc_timestamp()
     output_path = Path("results/metrics") / f"{timestamp}.json"
     ensure_directory(output_path)
-    payload = {"pairwise": pairwise, "biases": bias_metrics, "source": enriched_path.name}
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    payload = {
+        "pairwise": pairwise,
+        "biases": bias_metrics,
+        "source": enriched_path.name,
+        "diagnostics_path": diagnostics_path.name,
+    }
+    output_path.write_text(json.dumps(_json_compatible(payload), indent=2), encoding="utf-8")
     LOGGER.info("Metrics saved to %s", output_path)
 
 

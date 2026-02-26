@@ -45,6 +45,9 @@
     {% if latest_metrics %}
       {% if latest_metrics.biases %}
       <h3>Bias metrics (overall)</h3>
+      {% if latest_metrics.biases.citations_not_cross_platform_comparable %}
+      <p><em>Note: citations are reported per platform and are not treated as cross-platform comparable.</em></p>
+      {% endif %}
       <pre>{{ latest_metrics.biases | tojson(indent=2) }}</pre>
       {% if latest_metrics.biases.by_platform %}
       <h4>Bias metrics by platform</h4>
@@ -93,6 +96,167 @@
   </section>
 
   <section>
+    <h2>Bias Features Availability by Platform</h2>
+    {% if bias_features_availability %}
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Total</th>
+          <th>OA available</th>
+          <th>Country available</th>
+          <th>Citations available</th>
+          <th>Doc type available</th>
+          <th>Publisher available</th>
+          <th>ISSN available</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in bias_features_availability %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.total }}</td>
+          <td>{{ row.oa_count }} ({{ "%.1f%%"|format(row.oa_pct) }})</td>
+          <td>{{ row.country_count }} ({{ "%.1f%%"|format(row.country_pct) }})</td>
+          <td>{{ row.citations_count }} ({{ "%.1f%%"|format(row.citations_pct) }})</td>
+          <td>{{ row.doc_type_count }} ({{ "%.1f%%"|format(row.doc_type_pct) }})</td>
+          <td>{{ row.publisher_count }} ({{ "%.1f%%"|format(row.publisher_pct) }})</td>
+          <td>{{ row.issn_count }} ({{ "%.1f%%"|format(row.issn_pct) }})</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No bias feature availability summary available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Top-K Bias Summary</h2>
+    {% if top_k_bias_summary %}
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>K</th>
+          <th>OA top-K</th>
+          <th>OA overall</th>
+          <th>OA delta</th>
+          <th>OA reliability</th>
+          <th>Country JS divergence</th>
+          <th>Country reliability</th>
+          <th>Doc type JS divergence</th>
+          <th>Doc type reliability</th>
+          <th>Citation Spearman</th>
+          <th>Citations median top-K</th>
+          <th>Citations median rest</th>
+          <th>Citations reliability</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in top_k_bias_summary %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.k }}</td>
+          <td>{{ "%.3f"|format(row.oa_top_k_share) if row.oa_top_k_share is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.oa_overall_share) if row.oa_overall_share is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.oa_delta_share) if row.oa_delta_share is not none else "N/A" }}</td>
+          <td>{{ row.oa_reliability if row.oa_reliability is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.country_js_divergence) if row.country_js_divergence is not none else "N/A" }}</td>
+          <td>{{ row.country_reliability if row.country_reliability is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.doc_type_js_divergence) if row.doc_type_js_divergence is not none else "N/A" }}</td>
+          <td>{{ row.doc_type_reliability if row.doc_type_reliability is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.citation_spearman) if row.citation_spearman is not none else "N/A" }}</td>
+          <td>{{ "%.2f"|format(row.citation_median_top_k) if row.citation_median_top_k is not none else "N/A" }}</td>
+          <td>{{ "%.2f"|format(row.citation_median_rest) if row.citation_median_rest is not none else "N/A" }}</td>
+          <td>{{ row.citation_reliability if row.citation_reliability is not none else "N/A" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No top-k bias summary available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>CORE match source breakdown</h2>
+    {% if core_match_source_breakdown %}
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Total</th>
+          <th>Matched</th>
+          <th>Matched %</th>
+          <th>ISSN</th>
+          <th>Title</th>
+          <th>Fuzzy</th>
+          <th>Unmatched</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in core_match_source_breakdown %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.total }}</td>
+          <td>{{ row.matched_count }}</td>
+          <td>{{ "%.1f%%"|format(row.matched_pct) }}</td>
+          <td>{{ row.issn_count }}</td>
+          <td>{{ row.title_count }}</td>
+          <td>{{ row.fuzzy_count }}</td>
+          <td>{{ row.unmatched_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No CORE matching source summary available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Citations quality diagnostics</h2>
+    {% if citations_quality_rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Total</th>
+          <th>Known citations</th>
+          <th>Quality ok</th>
+          <th>Quality missing</th>
+          <th>Quality suspicious</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in citations_quality_rows %}
+        <tr>
+          <td>{{ row.platform }}</td>
+          <td>{{ row.total }}</td>
+          <td>{{ row.known_count }} ({{ "%.1f%%"|format(row.known_pct) }})</td>
+          <td>{{ row.ok_count }}</td>
+          <td>{{ row.missing_count }}</td>
+          <td>{{ row.suspicious_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No citations quality diagnostics available.</p>
+    {% endif %}
+
+    {% if diagnostics and diagnostics.warnings %}
+    <h3>Sanity warnings</h3>
+    <ul>
+      {% for warning in diagnostics.warnings %}
+      <li>{{ warning }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>CORE ranking</h2>
     {% if core_ranking_table %}
     <table>
@@ -136,9 +300,87 @@
     {% endif %}
   </section>
 
-  {% if jcr_summary %}
   <section>
-    <h2>JCR / Impact Factor Summary</h2>
+    <h2>Rankings coverage</h2>
+    {% if rankings_coverage_table %}
+    <table>
+      <thead>
+        <tr>
+          <th>Ranking</th>
+          <th>Matched</th>
+          <th>Total</th>
+          <th>Matched %</th>
+          <th>Method breakdown</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rankings_coverage_table %}
+        <tr>
+          <td>{{ row.ranking_id }}</td>
+          <td>{{ row.matched_count }}</td>
+          <td>{{ row.total }}</td>
+          <td>{{ "%.1f%%"|format(row.matched_pct) }}</td>
+          <td>{{ row.method_breakdown }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No ranking coverage summary available.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Journal Impact Factor (JIF/JCR)</h2>
+    <p>
+      Optional JIF/JCR enrichment can reveal systematic differences in journal visibility/coverage across platforms
+      (match quality, quartiles, publishers).
+    </p>
+    {% if jif_enabled %}
+      <p>Coverage: {{ "%.1f%%"|format(jif_coverage_pct) }} of records have an impact factor.</p>
+      {% if jif_publisher_hhi_text %}
+      <p><em>{{ jif_publisher_hhi_text }}</em></p>
+      {% endif %}
+      {% if jif_rank_corr_text %}
+      <p><em>{{ jif_rank_corr_text }}</em></p>
+      {% endif %}
+      <div class="charts">
+        {% if jif_match_plot_png %}
+        <div class="chart-card">
+          <h3>JIF match quality</h3>
+          <img src="data:image/png;base64,{{ jif_match_plot_png }}" alt="JIF match quality" />
+        </div>
+        {% endif %}
+        {% if jif_distribution_plot_png %}
+        <div class="chart-card">
+          <h3>Impact factor distribution</h3>
+          <img src="data:image/png;base64,{{ jif_distribution_plot_png }}" alt="Impact factor distribution" />
+        </div>
+        {% endif %}
+        {% if jif_quartile_plot_png %}
+        <div class="chart-card">
+          <h3>JCR quartiles</h3>
+          <img src="data:image/png;base64,{{ jif_quartile_plot_png }}" alt="JCR quartile distribution" />
+        </div>
+        {% endif %}
+        {% if jif_publisher_plot_png %}
+        <div class="chart-card">
+          <h3>Top JCR publishers</h3>
+          <img src="data:image/png;base64,{{ jif_publisher_plot_png }}" alt="Top JCR publishers" />
+        </div>
+        {% endif %}
+        {% if jif_rank_plot_png %}
+        <div class="chart-card">
+          <h3>Rank vs impact factor</h3>
+          <img src="data:image/png;base64,{{ jif_rank_plot_png }}" alt="Rank vs impact factor" />
+        </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <p>{{ jif_message }}</p>
+    {% endif %}
+    {% if jcr_summary %}
+    <h3>Summary table</h3>
     <table>
       <thead>
         <tr>
@@ -169,8 +411,38 @@
         {% endfor %}
       </tbody>
     </table>
+    {% endif %}
   </section>
-  {% endif %}
+
+  <section>
+    <h2>Scopus enrichment</h2>
+    {% if scopus_summary %}
+    <table>
+      <thead>
+        <tr>
+          <th>Total records</th>
+          <th>Scopus enriched</th>
+          <th>Scopus enriched %</th>
+          <th>With cited-by count</th>
+          <th>With serial metrics</th>
+          <th>With citation overview</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{ scopus_summary.total }}</td>
+          <td>{{ scopus_summary.enriched_count }}</td>
+          <td>{{ "%.1f%%"|format(scopus_summary.enriched_pct) }}</td>
+          <td>{{ scopus_summary.with_citedby_count }}</td>
+          <td>{{ scopus_summary.with_serial_metrics }}</td>
+          <td>{{ scopus_summary.with_citation_overview }}</td>
+        </tr>
+      </tbody>
+    </table>
+    {% else %}
+    <p>No Scopus enrichment summary available.</p>
+    {% endif %}
+  </section>
 
   <section>
     <h2>Sample Records</h2>

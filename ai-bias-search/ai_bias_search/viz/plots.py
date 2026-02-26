@@ -144,7 +144,7 @@ def plot_recency_by_platform(frame: pd.DataFrame, output: Path) -> None:
         return
     output.parent.mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(max(6, len(grouped) * 1.4), 4))
-    plt.boxplot(grouped.values(), labels=grouped.keys(), vert=True)
+    plt.boxplot(list(grouped.values()), tick_labels=list(grouped.keys()), vert=True)
     plt.title("Publication year by platform")
     plt.xlabel("Platform")
     plt.ylabel("Year")
@@ -232,6 +232,237 @@ def plot_publisher_hhi_per_platform(frame: pd.DataFrame, output: Path) -> None:
     plt.ylim(0, 1)
     plt.tight_layout()
     plt.savefig(output)
+    plt.close()
+
+
+def plot_oa_share_top_k_by_platform(
+    frame: pd.DataFrame,
+    output: Path,
+    *,
+    top_k: int = 10,
+) -> None:
+    if {"platform", "rank"} - set(frame.columns):
+        LOGGER.warning("platform/rank missing; skipping OA top-k plot")
+        return
+    oa_col = "is_oa" if "is_oa" in frame.columns else ("is_open_access" if "is_open_access" in frame.columns else None)
+    if oa_col is None:
+        LOGGER.warning("is_oa/is_open_access missing; skipping OA top-k plot")
+        return
+
+    subset = frame[["platform", "rank", oa_col]].copy()
+    subset["_rank"] = pd.to_numeric(subset["rank"], errors="coerce")
+    subset[oa_col] = subset[oa_col].map(
+        lambda value: value
+        if isinstance(value, bool)
+        else (bool(int(value)) if str(value).strip() in {"0", "1"} else None)
+    )
+    subset = subset.dropna(subset=["platform", "_rank", oa_col])
+    if subset.empty:
+        LOGGER.warning("No OA data for top-k plot")
+        return
+
+    shares: dict[str, float] = {}
+    for platform, platform_rows in subset.groupby("platform"):
+        sorted_rows = platform_rows.sort_values(by="_rank", kind="mergesort").head(top_k)
+        if sorted_rows.empty:
+            continue
+        shares[str(platform)] = float(sorted_rows[oa_col].astype(int).mean())
+    if not shares:
+        LOGGER.warning("No OA top-k shares to plot")
+        return
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(max(6, len(shares) * 1.4), 4))
+    pd.Series(shares).sort_index().plot(kind="bar")
+    plt.title(f"Open access share in Top-{top_k}")
+    plt.xlabel("Platform")
+    plt.ylabel("Share OA")
+    plt.ylim(0, 1)
+    plt.tight_layout()
+    plt.savefig(output)
+    plt.close()
+
+
+def plot_country_top_overall_vs_top_k(
+    frame: pd.DataFrame,
+    output: Path,
+    *,
+    top_k: int = 10,
+    top_n_countries: int = 10,
+    platform: str | None = None,
+) -> None:
+    if "affiliation_countries" not in frame.columns:
+        LOGGER.warning("affiliation_countries missing; skipping country top-k plot")
+        return
+    if "rank" not in frame.columns:
+        LOGGER.warning("rank missing; skipping country top-k plot")
+        return
+
+    subset = frame.copy()
+    if platform is None and "platform" in subset.columns:
+        platforms = sorted(str(value) for value in subset["platform"].dropna().unique())
+        if platforms:
+            platform = platforms[0]
+    if platform is not None and "platform" in subset.columns:
+        subset = subset[subset["platform"].astype(str) == platform]
+
+    if subset.empty:
+        LOGGER.warning("No data for country top-k plot")
+        return
+
+    subset["_rank"] = pd.to_numeric(subset["rank"], errors="coerce")
+    subset = subset.dropna(subset=["_rank"])
+    if subset.empty:
+        LOGGER.warning("No ranked data for country top-k plot")
+        return
+
+    def to_country_list(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            chunks = text.replace(";", ",").split(",") if "," in text or ";" in text else [text]
+            return [chunk.strip() for chunk in chunks if chunk.strip()]
+        return []
+
+    overall = Counter()
+    for value in subset["affiliation_countries"]:
+        for country in to_country_list(value):
+            overall[country] += 1
+    if not overall:
+        LOGGER.warning("No country values for country top-k plot")
+        return
+
+    top_subset = subset.sort_values(by="_rank", kind="mergesort").head(top_k)
+    top_counter = Counter()
+    for value in top_subset["affiliation_countries"]:
+        for country in to_country_list(value):
+            top_counter[country] += 1
+    if not top_counter:
+        LOGGER.warning("No country values in top-k for country top-k plot")
+        return
+
+    country_order = [name for name, _ in overall.most_common(top_n_countries)]
+    overall_total = sum(overall.values())
+    top_total = sum(top_counter.values())
+    overall_share = [overall.get(name, 0) / overall_total for name in country_order]
+    top_share = [top_counter.get(name, 0) / top_total for name in country_order]
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    width = 0.4
+    x = range(len(country_order))
+    plt.figure(figsize=(max(7, len(country_order) * 0.8), 4))
+    plt.bar([idx - width / 2 for idx in x], overall_share, width=width, label="Overall")
+    plt.bar([idx + width / 2 for idx in x], top_share, width=width, label=f"Top-{top_k}")
+    title_platform = f" ({platform})" if platform else ""
+    plt.title(f"Country share: overall vs Top-{top_k}{title_platform}")
+    plt.xlabel("Country")
+    plt.ylabel("Share")
+    plt.xticks(list(x), country_order, rotation=45, ha="right")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output, bbox_inches="tight")
+    plt.close()
+
+
+def plot_citedby_top_k_vs_rest(
+    frame: pd.DataFrame,
+    output: Path,
+    *,
+    top_k: int = 10,
+) -> None:
+    if {"platform", "rank", "cited_by_count"} - set(frame.columns):
+        LOGGER.warning("platform/rank/cited_by_count missing; skipping citation top-k plot")
+        return
+    subset = frame[["platform", "rank", "cited_by_count"]].copy()
+    subset["_rank"] = pd.to_numeric(subset["rank"], errors="coerce")
+    subset["_cited"] = pd.to_numeric(subset["cited_by_count"], errors="coerce")
+    subset = subset.dropna(subset=["platform", "_rank", "_cited"])
+    if subset.empty:
+        LOGGER.warning("No citation data for top-k plot")
+        return
+
+    labels: list[str] = []
+    values: list[list[float]] = []
+    for platform, rows in subset.groupby("platform"):
+        ordered = rows.sort_values(by="_rank", kind="mergesort")
+        top_vals = ordered.head(top_k)["_cited"].tolist()
+        rest_vals = ordered.iloc[top_k:]["_cited"].tolist()
+        if top_vals:
+            labels.append(f"{platform} top-{top_k}")
+            values.append(top_vals)
+        if rest_vals:
+            labels.append(f"{platform} rest")
+            values.append(rest_vals)
+    if not values:
+        LOGGER.warning("No values for citation top-k plot")
+        return
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(max(8, len(labels) * 1.0), 4))
+    plt.boxplot(values, tick_labels=labels, vert=True)
+    plt.title(f"Citations in Top-{top_k} vs rest")
+    plt.xlabel("Group")
+    plt.ylabel("cited_by_count")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(output, bbox_inches="tight")
+    plt.close()
+
+
+def plot_doc_type_top_k_per_platform(
+    frame: pd.DataFrame,
+    output: Path,
+    *,
+    top_k: int = 10,
+) -> None:
+    if {"platform", "rank", "doc_type"} - set(frame.columns):
+        LOGGER.warning("platform/rank/doc_type missing; skipping doc-type top-k plot")
+        return
+    subset = frame[["platform", "rank", "doc_type"]].copy()
+    subset["_rank"] = pd.to_numeric(subset["rank"], errors="coerce")
+    subset["doc_type"] = subset["doc_type"].astype(str).str.strip()
+    subset = subset.dropna(subset=["platform", "_rank"])
+    subset = subset[subset["doc_type"] != ""]
+    subset = subset[subset["doc_type"].str.lower() != "nan"]
+    if subset.empty:
+        LOGGER.warning("No doc_type data for top-k plot")
+        return
+
+    rows: list[dict[str, object]] = []
+    for platform, data in subset.groupby("platform"):
+        top = data.sort_values(by="_rank", kind="mergesort").head(top_k)
+        for doc_type, count in top["doc_type"].value_counts().items():
+            rows.append({"platform": str(platform), "doc_type": str(doc_type), "count": int(count)})
+    if not rows:
+        LOGGER.warning("No doc_type values in top-k")
+        return
+    chart = pd.DataFrame(rows)
+    pivot = chart.pivot_table(
+        index="platform",
+        columns="doc_type",
+        values="count",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    if pivot.empty:
+        LOGGER.warning("No doc_type pivot for top-k plot")
+        return
+
+    top_types = pivot.sum(axis=0).sort_values(ascending=False).head(6).index.tolist()
+    pivot = pivot.reindex(columns=top_types, fill_value=0)
+    pivot = pivot.div(pivot.sum(axis=1).replace(0, 1), axis=0)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(max(7, len(pivot.index) * 1.4), 4))
+    pivot.sort_index().plot(kind="bar", stacked=True, ax=plt.gca())
+    plt.title(f"Doc type distribution in Top-{top_k}")
+    plt.xlabel("Platform")
+    plt.ylabel("Share")
+    plt.legend(title="Doc type", bbox_to_anchor=(1.04, 1), loc="upper left")
+    plt.tight_layout()
+    plt.savefig(output, bbox_inches="tight")
     plt.close()
 
 

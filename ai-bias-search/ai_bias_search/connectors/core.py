@@ -7,12 +7,14 @@ API surface and authentication header conventions can vary between deployments.
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import doi_from_url, normalise_doi
 from ai_bias_search.utils.logging import configure_logging, mask_sensitive
@@ -22,6 +24,7 @@ from ai_bias_search.utils.rate_limit import RateLimiter
 from .base import ConnectorError
 
 LOGGER = configure_logging()
+_SPLIT_TOKENS_RE = re.compile(r"[,\s;|]+")
 
 
 class CoreTransientError(ConnectorError):
@@ -163,6 +166,52 @@ def _authors_from_item(item: dict) -> list[str]:
     elif isinstance(raw, str) and raw.strip():
         authors.append(raw.strip())
     return authors
+
+
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_issn_values(item: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        if isinstance(value, list):
+            for entry in value:
+                add(entry)
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        for token in _SPLIT_TOKENS_RE.split(text):
+            normalized = normalize_issn(token)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                out.append(normalized)
+
+    identifiers = item.get("identifiers")
+    if not isinstance(identifiers, dict):
+        identifiers = {}
+
+    add(item.get("issn"))
+    add(item.get("eissn"))
+    add(item.get("journalIssn"))
+    add(identifiers.get("issn"))
+    add(identifiers.get("eissn"))
+    return out
 
 
 def _doi_from_item(item: dict) -> str | None:
@@ -471,6 +520,11 @@ class CoreConnector:
 
         source = item.get("venue") or item.get("journal") or item.get("publisher")
         source_value = source.strip() if isinstance(source, str) and source.strip() else None
+        publisher = item.get("publisher")
+        publisher_value = (
+            publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
+        )
+        citations = _coerce_int(item.get("citationCount") or item.get("citations"))
 
         record = Record(
             title=title,
@@ -483,7 +537,17 @@ class CoreConnector:
             authors=_authors_from_item(item) or None,
             extra={"core": item},
         )
-        return record.model_dump()
+        normalized = record.model_dump()
+        normalized.update(
+            {
+                "publisher": publisher_value,
+                "journal_title": source_value,
+                "issn_list": _extract_issn_values(item) or None,
+                "cited_by_count": citations,
+                "citations": citations,
+            }
+        )
+        return normalized
 
     def close(self) -> None:
         try:

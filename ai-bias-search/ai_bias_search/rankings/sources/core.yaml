@@ -1,0 +1,22 @@
+id: core
+label: CORE conference ranking
+enabled: true
+dataset_path: ../datasets/core.csv
+dataset_path_env: CORE_RANKINGS_PATH
+format: csv
+has_header: auto
+fields:
+  title: 1
+  rank_value: 4
+title_alias_fields:
+  - 2
+rank_value_allowlist: ["A*", "A", "B", "C"]
+normalization:
+  strip_parens: true
+  replace_ampersand: true
+  remove_punct: true
+  collapse_whitespace: true
+  lowercase: true
+allow_fuzzy: true
+fuzzy_threshold: 0.95
+cache_ttl_days: 30

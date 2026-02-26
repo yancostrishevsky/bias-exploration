@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import normalise_doi
 from ai_bias_search.utils.logging import configure_logging, mask_sensitive
@@ -18,6 +20,54 @@ from ai_bias_search.utils.rate_limit import RateLimiter
 from .base import ConnectorError
 
 LOGGER = configure_logging()
+_SPLIT_TOKENS_RE = re.compile(r"[,\s;|]+")
+
+
+def _coerce_mapping(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_issn_values(paper: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        if value is None:
+            return
+        if isinstance(value, list):
+            for item in value:
+                add(item)
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        for token in _SPLIT_TOKENS_RE.split(text):
+            normalized = normalize_issn(token)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                out.append(normalized)
+
+    journal = _coerce_mapping(paper.get("journal"))
+    publication_venue = _coerce_mapping(paper.get("publicationVenue"))
+    external_ids = _coerce_mapping(paper.get("externalIds"))
+    add(journal.get("issn"))
+    add(publication_venue.get("issn"))
+    add(external_ids.get("ISSN"))
+    return out
 
 
 class SemanticScholarConnector:
@@ -41,6 +91,8 @@ class SemanticScholarConnector:
         "s2FieldsOfStudy",
         "citationCount",
         "referenceCount",
+        "journal",
+        "publicationVenue",
     ]
     PER_PAGE = 200
 
@@ -103,6 +155,24 @@ class SemanticScholarConnector:
             authors = [a.get("name") for a in paper.get("authors", []) if a.get("name")]
             external_ids = paper.get("externalIds") or {}
             doi = normalise_doi(external_ids.get("DOI")) if isinstance(external_ids, dict) else None
+            journal = _coerce_mapping(paper.get("journal"))
+            publication_venue = _coerce_mapping(paper.get("publicationVenue"))
+            publisher = (
+                journal.get("publisher")
+                or publication_venue.get("publisher")
+                or paper.get("publisher")
+            )
+            publisher = publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
+            journal_title = journal.get("name") or paper.get("venue")
+            journal_title = (
+                journal_title.strip()
+                if isinstance(journal_title, str) and journal_title.strip()
+                else None
+            )
+            citations = _coerce_int(paper.get("citationCount"))
+            is_oa = paper.get("isOpenAccess")
+            if not isinstance(is_oa, bool):
+                is_oa = None
             record = Record(
                 title=paper.get("title", ""),
                 doi=doi,
@@ -114,7 +184,18 @@ class SemanticScholarConnector:
                 authors=authors or None,
                 extra={"semanticscholar": paper},
             )
-            records.append(record.model_dump())
+            normalized = record.model_dump()
+            normalized.update(
+                {
+                    "publisher": publisher,
+                    "journal_title": journal_title,
+                    "issn_list": _extract_issn_values(paper) or None,
+                    "cited_by_count": citations,
+                    "citations": citations,
+                    "is_oa": is_oa,
+                }
+            )
+            records.append(normalized)
         return records
 
     # ---------- helpers ----------

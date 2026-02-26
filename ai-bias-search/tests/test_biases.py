@@ -53,6 +53,8 @@ def test_metadata_completeness_missing_columns() -> None:
         "language": None,
         "publisher": None,
         "is_oa": None,
+        "citations": None,
+        "issn_coverage": None,
     }
 
 
@@ -70,12 +72,14 @@ def test_metadata_completeness_treats_empty_strings_as_missing() -> None:
     assert result["year_coverage"] == approx(2 / 3)
     assert result["publisher"] is None
     assert result["is_oa"] is None
+    assert result["citations"] is None
+    assert result["issn_coverage"] is None
 
 
 def test_bias_metrics_basic() -> None:
     frame = pd.DataFrame(
         {
-            "doi": ["d1", "d2", "d3", "d4"],
+            "doi": ["10.1000/d1", "10.1000/d2", "10.1000/d3", "10.1000/d4"],
             "publication_year": [2022, 2023, 2023, 2020],
             "language": ["en", "en", "es", "es"],
             "is_oa": [True, False, True, True],
@@ -95,13 +99,16 @@ def test_bias_metrics_basic() -> None:
     assert metrics["open_access"]["share_open_access"] == 0.75
     assert set(metrics["language"].keys()) == {"en", "es"}
     assert metrics["publisher_hhi"]["hhi"] > 0
-    assert metrics["rank_vs_citations"]["spearman"] is not None
+    assert metrics["rank_vs_citations"]["citations_not_cross_platform_comparable"] is True
+    assert metrics["rank_vs_citations"]["spearman"] is None
     assert metrics["completeness"] == {
         "doi": approx(1.0),
         "year_coverage": approx(1.0),
         "language": approx(1.0),
         "publisher": approx(1.0),
         "is_oa": approx(1.0),
+        "citations": approx(1.0),
+        "issn_coverage": approx(0.0),
     }
     assert set(metrics["by_platform"].keys()) == {"p1", "p2"}
     assert metrics["by_platform"]["p1"]["open_access"]["share_open_access"] == approx(0.5)
@@ -110,3 +117,77 @@ def test_bias_metrics_basic() -> None:
         "p1": {"share_open_access": approx(0.5)},
         "p2": {"share_open_access": approx(1.0)},
     }
+
+
+def test_top_k_bias_metrics_available() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["p1"] * 6,
+            "rank": [1, 2, 3, 4, 5, 6],
+            "is_oa": [True, True, False, False, True, False],
+            "affiliation_countries": [
+                ["PL"],
+                ["PL", "DE"],
+                ["DE"],
+                ["US"],
+                ["US"],
+                ["PL"],
+            ],
+            "cited_by_count": [30, 20, 10, 8, 2, 1],
+            "doc_type": ["Article", "Article", "Review", "Review", "Article", "Note"],
+            "journal_title": ["J1", "J1", "J2", "J3", "J4", "J5"],
+            "issn_list": [["12345678"], ["12345678"], ["87654321"], ["11112222"], ["33334444"], []],
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    top_k = metrics["top_k_bias"]
+    assert top_k["oa"]["available"] is True
+    assert top_k["oa"]["per_k"]["10"]["effective_k"] == 6
+    assert top_k["country"]["per_k"]["10"]["js_divergence"] is not None
+    assert top_k["citations"]["spearman_rank_vs_citations"] is not None
+    assert top_k["doc_type"]["per_k"]["10"]["js_divergence"] is not None
+    assert top_k["journal_issn"]["per_k"]["10"]["unique_journal_title_count"] == 5
+
+
+def test_top_k_bias_metrics_mark_not_available_when_missing() -> None:
+    frame = pd.DataFrame({"platform": ["p1", "p1"], "rank": [1, 2]})
+    metrics = compute_bias_metrics(frame)
+    top_k = metrics["top_k_bias"]
+    assert top_k["oa"]["available"] is False
+    assert top_k["country"]["available"] is False
+    assert top_k["doc_type"]["available"] is False
+    assert top_k["citations"]["available"] is False
+
+
+def test_top_k_citation_reliability_gating_blocks_unstable_delta() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["p1"] * 20,
+            "rank": list(range(1, 21)),
+            "cited_by_count": [100, 50] + [None] * 8 + [5] * 10,
+            "publication_year": [2020] * 20,
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    citations_top10 = metrics["top_k_bias"]["citations"]["per_k"]["10"]
+    assert citations_top10["minimum_required"] == 10
+    assert citations_top10["available_count"] == 2
+    assert citations_top10["available"] is False
+    assert citations_top10["delta_median_top_vs_rest"] is None
+    assert citations_top10["reliability"] == "low"
+
+
+def test_multi_platform_citations_are_marked_non_comparable() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["a", "a", "b", "b"],
+            "rank": [1, 2, 1, 2],
+            "cited_by_count": [10, 5, 100, 50],
+            "publication_year": [2020, 2021, 2020, 2021],
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    assert metrics["citations_not_cross_platform_comparable"] is True
+    assert metrics["rank_vs_citations"]["citations_not_cross_platform_comparable"] is True
+    assert set(metrics["rank_vs_citations"]["per_platform"].keys()) == {"a", "b"}
+    assert metrics["top_k_bias"]["citations"]["citations_not_cross_platform_comparable"] is True

@@ -38,11 +38,28 @@ class Record(BaseModel):
 class EnrichedRecord(Record):
     """Record augmented with OpenAlex metadata."""
 
+    rankings: Dict[str, Any] = Field(default_factory=dict)
+    scopus: Dict[str, Any] = Field(default_factory=dict)
+    scopus_meta: Dict[str, Any] = Field(default_factory=dict)
+
     language: Optional[str] = None
     is_oa: Optional[bool] = None
+    is_open_access: Optional[bool] = None
     publication_year: Optional[int] = Field(default=None, ge=1800, le=2100)
     host_venue: Optional[str] = None
     venue_type: Optional[str] = None
+    journal_title: Optional[str] = None
+    source_id: Optional[str] = None
+    doc_type: Optional[str] = None
+    issn_list: Optional[List[str]] = None
+    affiliation_countries: Optional[List[str]] = None
+    affiliation_institutions: Optional[List[str]] = None
+    affiliation_cities: Optional[List[str]] = None
+    author_ids: Optional[List[str]] = None
+    author_count: Optional[int] = Field(default=None, ge=0)
+    scopus_enrich_view_used: Optional[str] = None
+    scopus_enrich_field_used: Optional[str] = None
+    scopus_enrich_downgraded: Optional[bool] = None
     is_core_listed: Optional[bool] = None
     core_rank: Optional[str] = None
     publisher: Optional[str] = None

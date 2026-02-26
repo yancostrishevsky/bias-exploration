@@ -26,6 +26,13 @@ def test_generate_report_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 "title": "Paper",
                 "doi": "10.0/example",
                 "impact_factor": 1.23,
+                "rankings": {
+                    "scopus": {
+                        "citescore": {"value": 3.14, "year": 2024},
+                        "sjr": {"value": 0.77, "year": 2023},
+                        "snip": {"value": 1.02, "year": 2023},
+                    }
+                },
             }
         ],
     )
@@ -40,6 +47,14 @@ def test_generate_report_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     rendered = output_path.read_text(encoding="utf-8")
     assert "AI Bias exploration Report" in rendered
     assert "Metrics (20240101T000000Z)" in rendered
+    assert "Bias Features Availability by Platform" in rendered
+    assert "Top-K Bias Summary" in rendered
+    assert "CORE match source breakdown" in rendered
+    assert "Citations quality diagnostics" in rendered
+    assert "Journal Impact Factor (JIF/JCR)" in rendered
+    assert "Scopus CiteScore (year)" in rendered
+    assert "Scopus SJR (year)" in rendered
+    assert "Scopus SNIP (year)" in rendered
     assert "Sample Records" in rendered
 
 
@@ -66,4 +81,9 @@ def test_generate_report_without_metrics_dir(
     make_report.generate_report(enriched_path, metrics_dir, output_path)
 
     rendered = output_path.read_text(encoding="utf-8")
+    assert "Journal Impact Factor (JIF/JCR)" in rendered
+    assert "Bias Features Availability by Platform" in rendered
+    assert "Top-K Bias Summary" in rendered
+    assert "CORE match source breakdown" in rendered
+    assert "Citations quality diagnostics" in rendered
     assert "No metrics available." in rendered

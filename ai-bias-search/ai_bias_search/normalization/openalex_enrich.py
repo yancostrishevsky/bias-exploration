@@ -12,14 +12,11 @@ import httpx
 from diskcache import Cache
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ai_bias_search.rankings.base import MatchResult, normalize_issn, normalize_title
+from ai_bias_search.rankings.registry import get_provider, match_all as match_rankings
 from ai_bias_search.utils.config import ImpactFactorConfig, RetryConfig
 from ai_bias_search.utils.core_rankings import is_known_core_acronym, lookup_core_rank
 from ai_bias_search.utils.ids import best_identifier, normalise_doi
-from ai_bias_search.utils.impact_factor import (
-    ImpactFactorIndex,
-    load_jif_xlsx,
-    match_jcr_entry,
-)
 from ai_bias_search.utils.logging import configure_logging
 from ai_bias_search.utils.models import EnrichedRecord
 from ai_bias_search.utils.rate_limit import RateLimiter
@@ -320,6 +317,7 @@ def _collect_issn_candidates(metadata: dict, record: dict) -> list[str]:
         host = {}
 
     candidates: list[str] = []
+    seen: set[str] = set()
 
     def add(value: object) -> None:
         if value is None:
@@ -329,8 +327,18 @@ def _collect_issn_candidates(metadata: dict, record: dict) -> list[str]:
                 add(item)
             return
         text = str(value).strip()
-        if text:
-            candidates.append(text)
+        if not text:
+            return
+        tokens = (
+            text.replace(";", ",").replace("|", ",").split(",")
+            if ("," in text or ";" in text or "|" in text)
+            else [text]
+        )
+        for token in tokens:
+            normalized = normalize_issn(token.strip())
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                candidates.append(normalized)
 
     add(host.get("issn_l"))
     add(host.get("issn"))
@@ -342,44 +350,209 @@ def _collect_issn_candidates(metadata: dict, record: dict) -> list[str]:
     return candidates
 
 
-def _load_impact_factor_index(config: ImpactFactorConfig) -> ImpactFactorIndex:
-    path = config.xlsx_path
-    if not path.exists():
-        LOGGER.warning("Impact factor XLSX missing at %s; mapping disabled", path)
-        return ImpactFactorIndex({}, {}, (), ())
+JIF_PAYLOAD_FIELDS = (
+    "impact_factor",
+    "impact_factor_year",
+    "impact_factor_match",
+    "impact_factor_title_raw",
+    "impact_factor_title_key",
+    "impact_factor_source",
+    "jcr_year",
+    "jcr_publisher",
+    "jcr_issn",
+    "jcr_eissn",
+    "jcr_total_cites",
+    "jcr_total_articles",
+    "jcr_citable_items",
+    "jcr_jif_5y",
+    "jcr_jif_wo_self_cites",
+    "jcr_jci",
+    "jcr_quartile",
+    "jcr_jif_rank",
+    "jcr_match_type",
+)
+
+
+def _coerce_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
     try:
-        return load_jif_xlsx(
-            path,
-            sheet_name=config.sheet_name,
-            title_column=config.title_column,
-            jif_column=config.jif_column,
-            year_column=config.year_column,
-            publisher_column=config.publisher_column,
-            issn_column=config.issn_column,
-            eissn_column=config.eissn_column,
-            total_cites_column=config.total_cites_column,
-            citable_items_column=config.citable_items_column,
-            total_articles_column=config.total_articles_column,
-            jif_5y_column=config.jif_5y_column,
-            jif_wo_self_cites_column=config.jif_wo_self_cites_column,
-            jci_column=config.jci_column,
-            quartile_column=config.quartile_column,
-            jif_rank_column=config.jif_rank_column,
-        )
-    except Exception as exc:
-        LOGGER.warning("Failed to load impact factor XLSX at %s: %s", path, exc)
-        return ImpactFactorIndex({}, {}, (), ())
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
 
 
-def _impact_factor_payload(
-    metadata: dict,
-    record: dict,
-    index: ImpactFactorIndex,
-    config: ImpactFactorConfig,
+def _coerce_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _configure_jif_provider(impact_factor: ImpactFactorConfig) -> None:
+    """Apply legacy ImpactFactorConfig overrides to the unified `jif` ranking provider."""
+
+    provider = get_provider("jif")
+
+    desired_path = impact_factor.xlsx_path
+    if not desired_path.is_absolute():
+        desired_path = (Path.cwd() / desired_path).resolve()
+
+    changed = False
+    if provider.cfg.dataset_path != desired_path:
+        provider.cfg.dataset_path = desired_path
+        changed = True
+
+    if provider.cfg.sheet_name != impact_factor.sheet_name:
+        provider.cfg.sheet_name = impact_factor.sheet_name
+        changed = True
+
+    desired_fields: dict[str, str | int] = {
+        "title": impact_factor.title_column,
+        "rank_value": impact_factor.jif_column,
+    }
+    if impact_factor.year_column:
+        desired_fields["rank_year"] = impact_factor.year_column
+    if impact_factor.issn_column:
+        desired_fields["issn_print"] = impact_factor.issn_column
+    if impact_factor.eissn_column:
+        desired_fields["issn_online"] = impact_factor.eissn_column
+
+    desired_extra: dict[str, str | int] = {}
+    if impact_factor.publisher_column:
+        desired_extra["publisher"] = impact_factor.publisher_column
+    if impact_factor.total_cites_column:
+        desired_extra["total_cites"] = impact_factor.total_cites_column
+    if impact_factor.total_articles_column:
+        desired_extra["total_articles"] = impact_factor.total_articles_column
+    if impact_factor.citable_items_column:
+        desired_extra["citable_items"] = impact_factor.citable_items_column
+    if impact_factor.jif_5y_column:
+        desired_extra["jif_5y"] = impact_factor.jif_5y_column
+    if impact_factor.jif_wo_self_cites_column:
+        desired_extra["jif_wo_self_cites"] = impact_factor.jif_wo_self_cites_column
+    if impact_factor.jci_column:
+        desired_extra["jci"] = impact_factor.jci_column
+    if impact_factor.quartile_column:
+        desired_extra["quartile"] = impact_factor.quartile_column
+    if impact_factor.jif_rank_column:
+        desired_extra["jif_rank"] = impact_factor.jif_rank_column
+
+    if provider.cfg.fields != desired_fields:
+        provider.cfg.fields = desired_fields
+        changed = True
+    if provider.cfg.extra_fields != desired_extra:
+        provider.cfg.extra_fields = desired_extra
+        changed = True
+
+    desired_allow_fuzzy = bool(impact_factor.allow_fuzzy)
+    desired_threshold = float(impact_factor.fuzzy_threshold) / 100.0
+    if provider.cfg.allow_fuzzy != desired_allow_fuzzy:
+        provider.cfg.allow_fuzzy = desired_allow_fuzzy
+        changed = True
+    if provider.cfg.fuzzy_threshold != desired_threshold:
+        provider.cfg.fuzzy_threshold = desired_threshold
+        changed = True
+    if provider.cfg.reject_ambiguous_fuzzy != bool(impact_factor.reject_ambiguous):
+        provider.cfg.reject_ambiguous_fuzzy = bool(impact_factor.reject_ambiguous)
+        changed = True
+
+    if changed:
+        provider.reset()
+
+
+def _jif_payload_from_match(
+    *,
+    result: MatchResult | None,
+    title_raw: str | None,
+    title_key: str | None,
+    impact_enabled: bool,
 ) -> Dict[str, Any]:
-    raw_title = _select_impact_factor_title(metadata, record)
-    issn_candidates = _collect_issn_candidates(metadata, record)
-    return match_jcr_entry(raw_title, issn_candidates, index, config)
+    payload: Dict[str, Any] = {key: None for key in JIF_PAYLOAD_FIELDS}
+    if not impact_enabled:
+        payload["impact_factor_match"] = "none"
+        payload["jcr_match_type"] = "none"
+        payload["impact_factor_source"] = None
+        payload["impact_factor_title_raw"] = title_raw
+        payload["impact_factor_title_key"] = title_key
+        return payload
+
+    if result is None or not result.matched or result.rank_value is None:
+        payload["impact_factor_match"] = "none"
+        payload["jcr_match_type"] = "none"
+        payload["impact_factor_source"] = "rankings:jif"
+        payload["impact_factor_title_raw"] = title_raw
+        payload["impact_factor_title_key"] = title_key
+        return payload
+
+    provider = get_provider("jif")
+    entry = provider.resolve_entry(result)
+
+    match_type = result.method if result.method != "unmatched" else "none"
+    payload["impact_factor_match"] = match_type
+    payload["jcr_match_type"] = match_type
+    payload["impact_factor_source"] = "rankings:jif"
+    payload["impact_factor_title_raw"] = title_raw
+    payload["impact_factor_title_key"] = title_key
+
+    payload["impact_factor"] = _coerce_float(result.rank_value)
+    payload["impact_factor_year"] = entry.rank_year if entry else None
+    payload["jcr_year"] = entry.rank_year if entry else None
+    payload["jcr_issn"] = entry.issn_print if entry else None
+    payload["jcr_eissn"] = entry.issn_online if entry else None
+
+    extra = entry.extra if entry else {}
+    payload["jcr_publisher"] = str(extra.get("publisher")).strip() if extra.get("publisher") else None
+    payload["jcr_total_cites"] = _coerce_int(extra.get("total_cites"))
+    payload["jcr_total_articles"] = _coerce_int(extra.get("total_articles"))
+    payload["jcr_citable_items"] = _coerce_int(extra.get("citable_items"))
+    payload["jcr_jif_5y"] = _coerce_float(extra.get("jif_5y"))
+    payload["jcr_jif_wo_self_cites"] = _coerce_float(extra.get("jif_wo_self_cites"))
+    payload["jcr_jci"] = _coerce_float(extra.get("jci"))
+    payload["jcr_quartile"] = str(extra.get("quartile")).strip() if extra.get("quartile") else None
+    payload["jcr_jif_rank"] = str(extra.get("jif_rank")).strip() if extra.get("jif_rank") else None
+
+    return payload
+
+
+def _rankings_dict(results: dict[str, MatchResult]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for ranking_id, result in results.items():
+        evidence = result.evidence if isinstance(result.evidence, dict) else dict(result.evidence)
+        matched_key = evidence.get("issn") or evidence.get("title_norm") or evidence.get("best_key")
+        source = None
+        if result.method == "issn_exact":
+            source = "issn"
+        elif result.method == "title_exact":
+            source = "title"
+        elif result.method == "title_fuzzy":
+            source = "fuzzy"
+        payload[ranking_id] = {
+            "matched": bool(result.matched),
+            "value": result.rank_value,
+            "method": result.method,
+            "score": float(result.score),
+            "evidence": evidence,
+            "rank": result.rank_value if ranking_id == "core" else None,
+            "source": source,
+            "confidence": (float(result.score) if result.matched else None),
+            "matched_key": str(matched_key) if matched_key is not None else None,
+        }
+    return payload
 
 
 def extract_venue_candidates(metadata: dict, record: dict) -> dict:
@@ -554,9 +727,8 @@ def enrich_with_openalex(
     retrying = _openalex_retrying(retry_cfg)
 
     impact_enabled = bool(impact_factor and impact_factor.enabled)
-    impact_index: ImpactFactorIndex | None = None
-    if impact_enabled and impact_factor:
-        impact_index = _load_impact_factor_index(impact_factor)
+    if impact_factor:
+        _configure_jif_provider(impact_factor)
 
     enriched: List[Dict[str, Any]] = []
     with Cache(CACHE_DIR) as cache:
@@ -567,10 +739,25 @@ def enrich_with_openalex(
                     LOGGER.debug(
                         "OpenAlex: no identifier for record (title=%r)", record.get("title")
                     )
-                    if impact_enabled and impact_factor and impact_index is not None:
+                    title_raw = _select_impact_factor_title({}, record)
+                    issn_candidates = _collect_issn_candidates({}, record)
+                    skip_ids = {"jif"} if not impact_enabled else set()
+                    results = match_rankings(title_raw, issn_candidates, skip_ids=skip_ids)
+                    record = {**record, "rankings": _rankings_dict(results)}
+                    if impact_enabled:
+                        jif_title_key = (
+                            normalize_title(title_raw, get_provider("jif").cfg.normalization)
+                            if title_raw
+                            else None
+                        )
                         record = {
                             **record,
-                            **_impact_factor_payload({}, record, impact_index, impact_factor),
+                            **_jif_payload_from_match(
+                                result=results.get("jif"),
+                                title_raw=title_raw,
+                                title_key=jif_title_key,
+                                impact_enabled=True,
+                            ),
                         }
                     enriched.append(record)
                     continue
@@ -593,10 +780,25 @@ def enrich_with_openalex(
                     cache.set(cache_key, metadata, expire=60 * 60 * 24 * 7)
 
                 if not metadata:
-                    if impact_enabled and impact_factor and impact_index is not None:
+                    title_raw = _select_impact_factor_title({}, record)
+                    issn_candidates = _collect_issn_candidates({}, record)
+                    skip_ids = {"jif"} if not impact_enabled else set()
+                    results = match_rankings(title_raw, issn_candidates, skip_ids=skip_ids)
+                    record = {**record, "rankings": _rankings_dict(results)}
+                    if impact_enabled:
+                        jif_title_key = (
+                            normalize_title(title_raw, get_provider("jif").cfg.normalization)
+                            if title_raw
+                            else None
+                        )
                         record = {
                             **record,
-                            **_impact_factor_payload({}, record, impact_index, impact_factor),
+                            **_jif_payload_from_match(
+                                result=results.get("jif"),
+                                title_raw=title_raw,
+                                title_key=jif_title_key,
+                                impact_enabled=True,
+                            ),
                         }
                     enriched.append(record)
                     continue
@@ -653,17 +855,43 @@ def enrich_with_openalex(
                     _compact_raw(raw),
                 )
 
-                if eligible:
-                    merged.core_rank = lookup_core_rank(
-                        venue_name=venue_name,
-                        venue_acronym=venue_acronym,
+                title_raw = _select_impact_factor_title(metadata, record) or venue_name
+                jif_title_key = None
+                if impact_enabled and title_raw:
+                    jif_title_key = normalize_title(
+                        title_raw, get_provider("jif").cfg.normalization
                     )
-                else:
-                    merged.core_rank = None
+                issn_candidates = _collect_issn_candidates(metadata, record)
+                skip_ids = {"jif"} if not impact_enabled else set()
+                results = match_rankings(title_raw, issn_candidates, skip_ids=skip_ids)
 
-                if impact_enabled and impact_factor and impact_index is not None:
-                    payload = _impact_factor_payload(metadata, record, impact_index, impact_factor)
-                    merged = merged.model_copy(update=payload)
+                if venue_acronym and eligible:
+                    core_provider = get_provider("core")
+                    core_res = core_provider.match(venue_acronym, None)
+                    if core_res.matched:
+                        results["core"] = core_res
+
+                merged.rankings = _rankings_dict(results)
+                merged.issn_list = issn_candidates or None
+                if title_raw:
+                    merged.journal_title = title_raw
+
+                core_result = results.get("core")
+                merged.core_rank = (
+                    str(core_result.rank_value).strip()
+                    if eligible and core_result and isinstance(core_result.rank_value, str)
+                    else None
+                )
+
+                if impact_enabled:
+                    merged = merged.model_copy(
+                        update=_jif_payload_from_match(
+                            result=results.get("jif"),
+                            title_raw=title_raw,
+                            title_key=jif_title_key,
+                            impact_enabled=True,
+                        )
+                    )
 
                 # do extra dokładamy cały surowy payload z OpenAlex
                 prev_extra = record.get("extra") or {}
