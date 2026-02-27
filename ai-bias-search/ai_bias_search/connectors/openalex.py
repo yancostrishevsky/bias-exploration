@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from ai_bias_search.diagnostics.capture import capture_request
 from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import doi_from_url, normalise_doi
@@ -37,6 +39,71 @@ def _coerce_int(value: object) -> int | None:
         return int(float(text))
     except (TypeError, ValueError):
         return None
+
+
+def _clean_publisher(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text in {"0", "0.0"}:
+        return None
+    return text
+
+
+def _looks_like_publisher_name(value: str) -> bool:
+    lowered = value.lower()
+    if any(token in lowered for token in ("journal", "conference", "proceedings", "transactions")):
+        return False
+    publisher_tokens = (
+        "press",
+        "publisher",
+        "publishing",
+        "publications",
+        "media",
+        "springer",
+        "elsevier",
+        "wiley",
+        "taylor",
+        "sage",
+        "mdpi",
+        "frontiers",
+        "oxford university press",
+        "cambridge university press",
+        "springer nature",
+        "elsevier",
+        "wiley",
+        "taylor & francis",
+        "sage publications",
+    )
+    if any(token in lowered for token in publisher_tokens):
+        return True
+    return False
+
+
+def _openalex_publisher(item: dict[str, Any]) -> str | None:
+    host_venue = _coerce_mapping(item.get("host_venue"))
+    primary_location = _coerce_mapping(item.get("primary_location"))
+    primary_source = _coerce_mapping(primary_location.get("source"))
+    locations = item.get("locations")
+    first_location = {}
+    if isinstance(locations, list) and locations:
+        first_location = _coerce_mapping(locations[0])
+    first_source = _coerce_mapping(_coerce_mapping(first_location).get("source"))
+
+    publisher = (
+        _clean_publisher(primary_source.get("publisher"))
+        or _clean_publisher(host_venue.get("publisher"))
+        or _clean_publisher(first_source.get("publisher"))
+    )
+    if publisher:
+        return publisher
+
+    display_name = _clean_publisher(primary_source.get("display_name"))
+    if display_name and _looks_like_publisher_name(display_name):
+        return display_name
+    return None
 
 
 def _extract_issn_list(item: dict[str, Any]) -> list[str]:
@@ -134,8 +201,7 @@ class OpenAlexConnector:
                 primary_location = item.get("primary_location") or {}
                 if isinstance(primary_location, dict):
                     doi = doi_from_url(primary_location.get("landing_page_url"))
-            publisher = source_obj.get("publisher") or host_venue.get("publisher")
-            publisher = publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
+            publisher = _openalex_publisher(item)
             journal_title = source_obj.get("display_name") or host_venue.get("display_name")
             journal_title = (
                 journal_title.strip() if isinstance(journal_title, str) and journal_title.strip() else None
@@ -171,11 +237,28 @@ class OpenAlexConnector:
     def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         def execute() -> Dict[str, Any]:
             self.rate_limiter.acquire()
-            response = self.client.get(
-                path, params=params, headers={"User-Agent": "ai-bias-search/0.1"}
-            )
-            response.raise_for_status()
-            return response.json()
+            headers = {"User-Agent": "ai-bias-search/0.1"}
+            response: httpx.Response | None = None
+            payload: Dict[str, Any] | None = None
+            started = time.perf_counter()
+            try:
+                response = self.client.get(path, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+                return payload
+            finally:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                capture_request(
+                    platform=self.name,
+                    stage="collect",
+                    endpoint=f"{self.BASE_URL}{path}",
+                    method="GET",
+                    params=params,
+                    headers=headers,
+                    status_code=(response.status_code if response is not None else None),
+                    duration_ms=duration_ms,
+                    response_payload=payload,
+                )
 
         return self.retrying(execute)
 

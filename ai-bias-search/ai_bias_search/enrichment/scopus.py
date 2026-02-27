@@ -13,16 +13,18 @@ import hashlib
 import os
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Mapping
 from urllib.parse import quote
 
 import httpx
-from diskcache import Cache
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ai_bias_search.utils.cache import Cache
+from ai_bias_search.diagnostics.capture import capture_request
 from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig, ScopusEnrichConfig
 from ai_bias_search.utils.ids import doi_from_url, normalise_doi
@@ -297,8 +299,52 @@ def _parse_year(value: object) -> int | None:
 def _normalize_title_for_cache(value: str) -> str | None:
     if not value or not isinstance(value, str):
         return None
-    text = " ".join(value.strip().lower().split())
+    cleaned = clean_title_for_scopus(value)
+    if not cleaned:
+        return None
+    text = " ".join(cleaned.strip().lower().split())
     return text or None
+
+
+def _strip_control_chars(value: str) -> str:
+    return "".join(
+        ch for ch in value if (unicodedata.category(ch)[0] != "C" or ch in "\t\n\r")
+    )
+
+
+def clean_title_for_scopus(title: str) -> str:
+    normalized = unicodedata.normalize("NFKC", title)
+    without_ctrl = _strip_control_chars(normalized)
+    collapsed = re.sub(r"\s+", " ", without_ctrl).strip()
+    if not collapsed:
+        return ""
+    if len(collapsed) > 250:
+        return collapsed[:250].rstrip()
+    return collapsed
+
+
+def _escape_scopus_title(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _looks_char_spaced_title(value: str) -> bool:
+    if len(value) < 24:
+        return False
+    letters = sum(1 for ch in value if ch.isalpha())
+    spaces = sum(1 for ch in value if ch.isspace())
+    if letters < 16:
+        return False
+    tokens = value.split()
+    if not tokens:
+        return False
+    single_letter_tokens = 0
+    for token in tokens:
+        letters_only = re.sub(r"[^A-Za-z]", "", token)
+        if letters_only and len(letters_only) == 1:
+            single_letter_tokens += 1
+    sparse_layout = spaces >= 0.35 * len(value)
+    fragmented_tokens = single_letter_tokens >= max(6, int(0.3 * len(tokens)))
+    return sparse_layout or fragmented_tokens
 
 
 def _is_missing(value: object) -> bool:
@@ -917,6 +963,31 @@ def _extract_plumx(payload: dict) -> dict[str, Any] | None:
     }
 
 
+def _merge_enrich_trace(existing: object, new_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    if isinstance(existing, list):
+        merged.extend(item for item in existing if isinstance(item, dict))
+    merged.extend(item for item in new_entries if isinstance(item, dict))
+    return merged
+
+
+def _last_status_from_attempts(fetch_meta: Mapping[str, Any]) -> int | None:
+    attempts = fetch_meta.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return None
+    last = attempts[-1]
+    if not isinstance(last, dict):
+        return None
+    return _coerce_int(last.get("status_code"))
+
+
+def _total_results_from_search_payload(payload: Mapping[str, Any]) -> int | None:
+    search_results = payload.get("search-results")
+    if not isinstance(search_results, dict):
+        return None
+    return _coerce_int(search_results.get("opensearch:totalResults"))
+
+
 class ScopusEnricher:
     def __init__(
         self,
@@ -1272,6 +1343,44 @@ class ScopusEnricher:
         headers: dict[str, str],
         ttl_seconds: int,
     ) -> dict[str, Any] | None:
+        enrich_trace: list[dict[str, Any]] = []
+        notes: list[str] = []
+
+        def _attach_trace(
+            payload: dict[str, Any] | None,
+            *,
+            method: str,
+            identifiers_used: list[str],
+        ) -> dict[str, Any]:
+            merged_payload = dict(payload) if isinstance(payload, dict) else {}
+            meta = merged_payload.get("scopus_meta")
+            if not isinstance(meta, dict):
+                meta = {}
+            trace_meta: dict[str, Any] = {
+                **meta,
+                "method": method,
+                "identifiers_used": identifiers_used,
+                "enrich_trace": enrich_trace,
+            }
+            if notes:
+                trace_meta["notes"] = notes
+            merged_payload["scopus_meta"] = trace_meta
+            merged_payload["enrich_trace"] = enrich_trace
+            return merged_payload
+
+        title = record.get("title")
+        cleaned_title = clean_title_for_scopus(title) if isinstance(title, str) else ""
+        title_query: str | None = None
+        title_search_valid = False
+        if self.config.title_search_enabled and cleaned_title:
+            if len(cleaned_title) < self.config.title_search_min_len:
+                notes.append("title_search_skipped_too_short")
+            elif _looks_char_spaced_title(cleaned_title):
+                notes.append("title_search_disabled_char_spaced")
+            else:
+                title_query = f'TITLE("{_escape_scopus_title(cleaned_title)}")'
+                title_search_valid = True
+
         if scopus_id:
             abstract, fetch_meta = self._get_abstract_by_scopus_id(
                 scopus_id,
@@ -1281,17 +1390,17 @@ class ScopusEnricher:
                 headers=headers,
                 ttl_seconds=ttl_seconds,
             )
+            enrich_trace.append(
+                {
+                    "platform": "scopus",
+                    "strategy": "scopus_id",
+                    "status": _last_status_from_attempts(fetch_meta),
+                    "result_count": 1 if abstract else 0,
+                }
+            )
             payload = _extract_enrichment(abstract) if abstract else None
             payload = self._apply_abstract_fetch_meta(payload, fetch_meta)
-            if isinstance(payload, dict):
-                meta = payload.get("scopus_meta")
-                if not isinstance(meta, dict):
-                    meta = {}
-                payload["scopus_meta"] = {
-                    **meta,
-                    "method": "scopus_id",
-                    "identifiers_used": ["scopus_id"],
-                }
+            payload = _attach_trace(payload, method="scopus_id", identifiers_used=["scopus_id"])
             return self._extend_payload(
                 payload,
                 cache=cache,
@@ -1301,9 +1410,6 @@ class ScopusEnricher:
                 ttl_seconds=ttl_seconds,
                 doi=doi,
             )
-
-        title = record.get("title")
-        title_text = title.strip() if isinstance(title, str) else None
 
         if doi:
             abstract, fetch_meta = self._get_abstract_by_doi(
@@ -1314,14 +1420,18 @@ class ScopusEnricher:
                 headers=headers,
                 ttl_seconds=ttl_seconds,
             )
+            enrich_trace.append(
+                {
+                    "platform": "scopus",
+                    "strategy": "doi_abstract",
+                    "status": _last_status_from_attempts(fetch_meta),
+                    "result_count": 1 if abstract else 0,
+                }
+            )
             if abstract:
                 payload = _extract_enrichment(abstract)
                 payload = self._apply_abstract_fetch_meta(payload, fetch_meta)
-                if isinstance(payload, dict):
-                    meta = payload.get("scopus_meta")
-                    if not isinstance(meta, dict):
-                        meta = {}
-                    payload["scopus_meta"] = {**meta, "method": "doi", "identifiers_used": ["doi"]}
+                payload = _attach_trace(payload, method="doi", identifiers_used=["doi"])
                 return self._extend_payload(
                     payload,
                     cache=cache,
@@ -1332,61 +1442,125 @@ class ScopusEnricher:
                     doi=doi,
                 )
 
-            found_id = self._search_scopus_id(
+            found_id, search_meta = self._search_scopus_id(
                 query=f"DOI({doi})",
+                strategy="doi",
                 cache=cache,
                 client=client,
                 retrying=retrying,
                 headers=headers,
                 ttl_seconds=ttl_seconds,
             )
-            if not found_id:
-                return None
-            abstract, fetch_meta = self._get_abstract_by_scopus_id(
-                found_id,
-                cache=cache,
-                client=client,
-                retrying=retrying,
-                headers=headers,
-                ttl_seconds=ttl_seconds,
-            )
-            payload = _extract_enrichment(abstract) if abstract else None
-            payload = self._apply_abstract_fetch_meta(payload, fetch_meta)
-            if isinstance(payload, dict):
-                meta = payload.get("scopus_meta")
-                if not isinstance(meta, dict):
-                    meta = {}
-                payload["scopus_meta"] = {
-                    **meta,
-                    "method": "doi_search",
-                    "identifiers_used": ["doi", "scopus_search"],
+            enrich_trace.append(
+                {
+                    "platform": "scopus",
+                    "strategy": "doi_search",
+                    "status": search_meta.get("status_code"),
+                    "result_count": search_meta.get("total_results"),
+                    "normalized_query": search_meta.get("query"),
+                    "note": search_meta.get("note"),
                 }
-            return self._extend_payload(
-                payload,
-                cache=cache,
-                client=client,
-                retrying=retrying,
-                headers=headers,
-                ttl_seconds=ttl_seconds,
-                doi=doi,
             )
+            if found_id:
+                abstract, fetch_meta = self._get_abstract_by_scopus_id(
+                    found_id,
+                    cache=cache,
+                    client=client,
+                    retrying=retrying,
+                    headers=headers,
+                    ttl_seconds=ttl_seconds,
+                )
+                enrich_trace.append(
+                    {
+                        "platform": "scopus",
+                        "strategy": "scopus_id_from_doi",
+                        "status": _last_status_from_attempts(fetch_meta),
+                        "result_count": 1 if abstract else 0,
+                    }
+                )
+                payload = _extract_enrichment(abstract) if abstract else None
+                payload = self._apply_abstract_fetch_meta(payload, fetch_meta)
+                payload = _attach_trace(
+                    payload,
+                    method="doi_search",
+                    identifiers_used=["doi", "scopus_search"],
+                )
+                return self._extend_payload(
+                    payload,
+                    cache=cache,
+                    client=client,
+                    retrying=retrying,
+                    headers=headers,
+                    ttl_seconds=ttl_seconds,
+                    doi=doi,
+                )
 
-        if (
-            self.config.title_search_enabled
-            and title_text
-            and len(title_text) >= self.config.title_search_min_len
-        ):
-            safe_title = re.sub(r"[\\r\\n\\t\\\"]+", " ", title_text).strip()
-            found_id = self._search_scopus_id(
-                query=f'TITLE("{safe_title}")',
+            if self.config.title_search_enabled and not title_search_valid:
+                enrich_trace.append(
+                    {
+                        "platform": "scopus",
+                        "strategy": "title",
+                        "status": None,
+                        "result_count": 0,
+                        "note": (
+                            "title_search_disabled_char_spaced"
+                            if "title_search_disabled_char_spaced" in notes
+                            else "title_search_skipped"
+                        ),
+                    }
+                )
+            if not title_search_valid:
+                return _attach_trace(
+                    None,
+                    method="doi_search",
+                    identifiers_used=["doi", "scopus_search"],
+                )
+
+        if self.config.title_search_enabled:
+            if not title_search_valid or not title_query:
+                enrich_trace.append(
+                    {
+                        "platform": "scopus",
+                        "strategy": "title",
+                        "status": None,
+                        "result_count": 0,
+                        "note": (
+                            "title_search_disabled_char_spaced"
+                            if "title_search_disabled_char_spaced" in notes
+                            else "title_search_skipped"
+                        ),
+                    }
+                )
+                return _attach_trace(None, method="title_search", identifiers_used=["title_search"])
+
+            title_retry_cfg = self.retries.model_copy(
+                update={"max": min(max(int(self.retries.max), 1), 2)}
+            )
+            title_retrying = _scopus_retrying(title_retry_cfg, sleep=self.sleep)
+            found_id, search_meta = self._search_scopus_id(
+                query=title_query,
+                strategy="title",
                 cache=cache,
                 client=client,
-                retrying=retrying,
+                retrying=title_retrying,
                 headers=headers,
                 ttl_seconds=ttl_seconds,
             )
+            enrich_trace.append(
+                {
+                    "platform": "scopus",
+                    "strategy": "title_search",
+                    "status": search_meta.get("status_code"),
+                    "result_count": search_meta.get("total_results"),
+                    "normalized_query": search_meta.get("query"),
+                    "note": search_meta.get("note"),
+                }
+            )
             if not found_id:
-                return None
+                if search_meta.get("note") == "disabled_title_after_500":
+                    notes.append("disabled_title_after_500")
+                return _attach_trace(None, method="title_search", identifiers_used=["title_search"])
+
             abstract, fetch_meta = self._get_abstract_by_scopus_id(
                 found_id,
                 cache=cache,
@@ -1395,17 +1569,17 @@ class ScopusEnricher:
                 headers=headers,
                 ttl_seconds=ttl_seconds,
             )
+            enrich_trace.append(
+                {
+                    "platform": "scopus",
+                    "strategy": "scopus_id_from_title",
+                    "status": _last_status_from_attempts(fetch_meta),
+                    "result_count": 1 if abstract else 0,
+                }
+            )
             payload = _extract_enrichment(abstract) if abstract else None
             payload = self._apply_abstract_fetch_meta(payload, fetch_meta)
-            if isinstance(payload, dict):
-                meta = payload.get("scopus_meta")
-                if not isinstance(meta, dict):
-                    meta = {}
-                payload["scopus_meta"] = {
-                    **meta,
-                    "method": "title_search",
-                    "identifiers_used": ["title_search"],
-                }
+            payload = _attach_trace(payload, method="title_search", identifiers_used=["title_search"])
             return self._extend_payload(
                 payload,
                 cache=cache,
@@ -1416,7 +1590,7 @@ class ScopusEnricher:
                 doi=None,
             )
 
-        return None
+        return _attach_trace(None, method="none", identifiers_used=[])
 
     def _extend_payload(
         self,
@@ -1523,66 +1697,87 @@ class ScopusEnricher:
 
         def execute() -> dict[str, Any] | None:
             self.limiter.acquire()
+            response: httpx.Response | None = None
+            payload_for_log: dict[str, Any] | None = None
+            started = time.perf_counter()
             LOGGER.debug(
                 "scopus enrich request path=%s params=%s headers=%s",
                 path,
                 params,
                 mask_sensitive(headers),
             )
-            resp = client.get(path, params=params, headers=headers)
-            traces = _trace_headers(resp)
-            _log_scopus_response(path, resp.status_code, traces)
-            if resp.status_code in allow:
-                return None
-            if resp.status_code == 401:
-                has_insttoken = bool(headers.get("X-ELS-Insttoken"))
-                inst_hint = (
-                    "X-ELS-Insttoken header was sent."
-                    if has_insttoken
-                    else "Set SCOPUS_INSTTOKEN if your account requires institutional token auth."
-                )
-                LOGGER.warning(
-                    "Scopus auth failure endpoint=%s status=401 "
-                    "diagnostic='permission/entitlement or missing InstToken/IP' "
-                    "view=%s field=%s x-els-reqid=%s x-els-transid=%s",
-                    path,
-                    (params or {}).get("view"),
-                    (params or {}).get("field"),
-                    traces.get("x-els-reqid", "-"),
-                    traces.get("x-els-transid", "-"),
-                )
-                raise ScopusAuthError(
-                    "Scopus returned 401 Unauthorized (permission/entitlement or missing "
-                    "InstToken/IP). Verify SCOPUS_API_KEY and institutional access. "
-                    f"{inst_hint}",
-                    status_code=401,
-                    path=path,
+            try:
+                response = client.get(path, params=params, headers=headers)
+                traces = _trace_headers(response)
+                _log_scopus_response(path, response.status_code, traces)
+                try:
+                    raw_payload = response.json()
+                    payload_for_log = raw_payload if isinstance(raw_payload, dict) else None
+                except Exception:
+                    payload_for_log = None
+                if response.status_code in allow:
+                    return None
+                if response.status_code == 401:
+                    has_insttoken = bool(headers.get("X-ELS-Insttoken"))
+                    inst_hint = (
+                        "X-ELS-Insttoken header was sent."
+                        if has_insttoken
+                        else "Set SCOPUS_INSTTOKEN if your account requires institutional token auth."
+                    )
+                    LOGGER.debug(
+                        "Scopus auth failure endpoint=%s status=401 "
+                        "diagnostic='permission/entitlement or missing InstToken/IP' "
+                        "view=%s field=%s x-els-reqid=%s x-els-transid=%s",
+                        path,
+                        (params or {}).get("view"),
+                        (params or {}).get("field"),
+                        traces.get("x-els-reqid", "-"),
+                        traces.get("x-els-transid", "-"),
+                    )
+                    raise ScopusAuthError(
+                        "Scopus returned 401 Unauthorized (permission/entitlement or missing "
+                        "InstToken/IP). Verify SCOPUS_API_KEY and institutional access. "
+                        f"{inst_hint}",
+                        status_code=401,
+                        path=path,
+                        params=params,
+                        traces=traces,
+                    )
+                if response.status_code == 403:
+                    LOGGER.debug(
+                        "Scopus permission failure endpoint=%s status=403 "
+                        "diagnostic='permission/entitlement or missing InstToken/IP' "
+                        "view=%s field=%s x-els-reqid=%s x-els-transid=%s",
+                        path,
+                        (params or {}).get("view"),
+                        (params or {}).get("field"),
+                        traces.get("x-els-reqid", "-"),
+                        traces.get("x-els-transid", "-"),
+                    )
+                    raise ScopusPermissionError(
+                        "Scopus returned 403 Forbidden (permission/entitlement or missing "
+                        "InstToken/IP). Confirm institutional access/service level and, if needed, "
+                        "configure SCOPUS_INSTTOKEN.",
+                        status_code=403,
+                        path=path,
+                        params=params,
+                        traces=traces,
+                    )
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else None
+            finally:
+                capture_request(
+                    platform="scopus",
+                    stage="enrich",
+                    endpoint=f"{self.config.base_url}{path}",
+                    method="GET",
                     params=params,
-                    traces=traces,
+                    headers=headers,
+                    status_code=(response.status_code if response is not None else None),
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    response_payload=payload_for_log,
                 )
-            if resp.status_code == 403:
-                LOGGER.warning(
-                    "Scopus permission failure endpoint=%s status=403 "
-                    "diagnostic='permission/entitlement or missing InstToken/IP' "
-                    "view=%s field=%s x-els-reqid=%s x-els-transid=%s",
-                    path,
-                    (params or {}).get("view"),
-                    (params or {}).get("field"),
-                    traces.get("x-els-reqid", "-"),
-                    traces.get("x-els-transid", "-"),
-                )
-                raise ScopusPermissionError(
-                    "Scopus returned 403 Forbidden (permission/entitlement or missing "
-                    "InstToken/IP). Confirm institutional access/service level and, if needed, "
-                    "configure SCOPUS_INSTTOKEN.",
-                    status_code=403,
-                    path=path,
-                    params=params,
-                    traces=traces,
-                )
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, dict) else None
 
         return retrying(execute)
 
@@ -1617,12 +1812,13 @@ class ScopusEnricher:
         self,
         *,
         query: str,
+        strategy: str,
         cache: Cache,
         client: httpx.Client,
         retrying: Retrying,
         headers: dict[str, str],
         ttl_seconds: int,
-    ) -> str | None:
+    ) -> tuple[str | None, dict[str, Any]]:
         digest = hashlib.sha1(query.encode("utf-8")).hexdigest()
         params: dict[str, Any] = {
             "query": query,
@@ -1634,33 +1830,107 @@ class ScopusEnricher:
             params["field"] = self.config.search_fields
         if self.config.search_sort:
             params["sort"] = self.config.search_sort
-        payload = self._get_json_optional_cached(
-            cache,
-            cache_key=(
-                f"search:scopus:{digest}|view:{self.config.search_view}|"
-                f"field:{self.config.search_fields or ''}|sort:{self.config.search_sort or ''}"
-            ),
-            path="/content/search/scopus",
-            params=params,
-            client=client,
-            retrying=retrying,
-            headers=headers,
-            allow_statuses=(404,),
-            ttl_seconds=ttl_seconds,
+        cache_key = (
+            f"search:scopus:{strategy}:{digest}|view:{self.config.search_view}|"
+            f"field:{self.config.search_fields or ''}|sort:{self.config.search_sort or ''}"
         )
+        try:
+            payload = self._get_json_optional_cached(
+                cache,
+                cache_key=cache_key,
+                path="/content/search/scopus",
+                params=params,
+                client=client,
+                retrying=retrying,
+                headers=headers,
+                allow_statuses=(404,),
+                ttl_seconds=ttl_seconds,
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if strategy == "title" and 500 <= status <= 599:
+                LOGGER.warning(
+                    "Scopus TITLE search failed with status=%s query=%s; disabling TITLE for this record",
+                    status,
+                    query,
+                )
+                return (
+                    None,
+                    {
+                        "strategy": strategy,
+                        "query": query,
+                        "status_code": status,
+                        "total_results": None,
+                        "note": "disabled_title_after_500",
+                    },
+                )
+            raise
         if not payload:
-            return None
+            LOGGER.debug(
+                "scopus enrich search strategy=%s query=%s status=404 totalResults=0",
+                strategy,
+                query,
+            )
+            return (
+                None,
+                {
+                    "strategy": strategy,
+                    "query": query,
+                    "status_code": 404,
+                    "total_results": 0,
+                    "note": "no_results",
+                },
+            )
+        total_results = _total_results_from_search_payload(payload)
         entry = _first_scopus_entry(payload)
         if not entry:
-            return None
-        return _extract_scopus_id(
-            entry.get("dc:identifier") or entry.get("eid") or entry.get("scopus_id")
+            LOGGER.debug(
+                "scopus enrich search strategy=%s query=%s status=200 totalResults=%s",
+                strategy,
+                query,
+                total_results,
+            )
+            return (
+                None,
+                {
+                    "strategy": strategy,
+                    "query": query,
+                    "status_code": 200,
+                    "total_results": total_results,
+                    "note": "no_entries",
+                },
+            )
+        found_id = _extract_scopus_id(entry.get("dc:identifier") or entry.get("eid") or entry.get("scopus_id"))
+        LOGGER.debug(
+            "scopus enrich search strategy=%s query=%s status=200 totalResults=%s",
+            strategy,
+            query,
+            total_results,
+        )
+        return (
+            found_id,
+            {
+                "strategy": strategy,
+                "query": query,
+                "status_code": 200,
+                "total_results": total_results,
+            },
         )
 
     def _abstract_attempts(self) -> list[dict[str, Any]]:
         primary_view = _normalize_view(self.config.abstract_view)
         primary_field = _clean_optional_str(self.config.abstract_fields)
         fallback_views = [_normalize_view(value) for value in self.config.abstract_fallback_views]
+        if isinstance(primary_view, str) and primary_view.upper() == "FULL":
+            # FULL is commonly entitlement-limited; always include META + no-view fallback.
+            merged_fallbacks: list[str | None] = []
+            seen_fallbacks: set[str | None] = set()
+            for fallback in ["META", None, *fallback_views]:
+                if fallback in seen_fallbacks:
+                    continue
+                seen_fallbacks.add(fallback)
+                merged_fallbacks.append(fallback)
+            fallback_views = merged_fallbacks
         minimal_field = _clean_optional_str(self.config.abstract_fields_minimal)
 
         attempts: list[dict[str, Any]] = []
@@ -1712,6 +1982,7 @@ class ScopusEnricher:
         attempts = self._abstract_attempts()
         attempt_history: list[dict[str, Any]] = []
         last_auth_error: ScopusResponseError | None = None
+        full_401_logged = False
 
         for attempt in attempts:
             view = attempt.get("view")
@@ -1732,6 +2003,14 @@ class ScopusEnricher:
                 )
             except (ScopusAuthError, ScopusPermissionError) as exc:
                 last_auth_error = exc
+                if (
+                    not full_401_logged
+                    and exc.status_code == 401
+                    and isinstance(view, str)
+                    and view.upper() == "FULL"
+                ):
+                    full_401_logged = True
+                    LOGGER.info("scopus: FULL view not authorized, falling back to META")
                 attempt_history.append(
                     {
                         "view": view,
@@ -1977,6 +2256,17 @@ class ScopusEnricher:
                 current_meta = {}
             updated["scopus_meta"] = {**current_meta, **meta_payload}
 
+        trace_payload = payload.get("enrich_trace")
+        if isinstance(trace_payload, list):
+            current_meta = updated.get("scopus_meta")
+            if not isinstance(current_meta, dict):
+                current_meta = {}
+            merged_meta = dict(current_meta)
+            merged_meta["enrich_trace"] = _merge_enrich_trace(
+                merged_meta.get("enrich_trace"), trace_payload
+            )
+            updated["scopus_meta"] = merged_meta
+
         prev_extra = updated.get("extra") or {}
         if not isinstance(prev_extra, dict):
             prev_extra = {}
@@ -1984,6 +2274,11 @@ class ScopusEnricher:
         if isinstance(scopus_enrich, dict):
             if overwrite or "scopus_enrich" not in prev_extra:
                 prev_extra = {**prev_extra, "scopus_enrich": scopus_enrich}
+        if isinstance(trace_payload, list):
+            prev_extra = {
+                **prev_extra,
+                "enrich_trace": _merge_enrich_trace(prev_extra.get("enrich_trace"), trace_payload),
+            }
         updated["extra"] = prev_extra
 
         return updated

@@ -30,7 +30,7 @@ The pipeline is modular:
 - **Connectors** isolate platform-specific API logic behind a shared interface.
 - **Enrichment** normalizes identifiers and attaches OpenAlex metadata, optional Scopus metadata, and optional venue rankings (CORE/JIF).
 - **Evaluation** computes overlap/ranking similarity and bias-oriented summaries from the enriched dataset.
-- **Reporting** renders a static HTML report embedding plots as base64 PNGs.
+- **Reporting** renders a self-contained HTML report with interactive client-side charts and filters.
 
 ---
 
@@ -115,24 +115,20 @@ Connectors are registered in a static mapping:
 - User-Agent:
   - configurable via `AI_BIAS_USER_AGENT` (default `ai-bias-search/0.1 (+contact@example.com)`).
 
-#### `core` — CORE v3 works search
+#### `core` — CORE works search
 - Implementation: `ai_bias_search/connectors/core.py`
-- Status: implemented; designed to be resilient to API variants and partial failures.
+- Status: implemented; canonical CORE v3 GET search path.
 - Requires:
   - `CORE_API_KEY` (connector fails fast if missing).
 - Key environment variables (all optional unless noted):
-  - `CORE_API_BASE_URL` (default `https://api.core.ac.uk/v3`)
-  - `CORE_SEARCH_PATH` (default `/search/works`)
-  - `CORE_SEARCH_METHOD` (`AUTO`, `GET`, or `POST`; default `AUTO`)
-  - `CORE_QUERY_PARAM`, `CORE_LIMIT_PARAM`, `CORE_OFFSET_PARAM`
+  - `CORE_API_BASE_URL` (default `https://api.core.ac.uk`)
   - `CORE_MAX_PAGE_SIZE` (default `25`)
-  - `CORE_AUTH_HEADER` (default `Authorization`)
-  - `CORE_AUTH_PREFIX` (default `Bearer`)
   - `AI_BIAS_USER_AGENT` (default `ai-bias-search/0.1 (+contact@example.com)`)
 - Pagination:
   - uses `limit`/`offset` style paging and de-duplicates within a query run.
 - Error handling:
   - retries transient HTTP failures (timeouts, 429/5xx, etc.) and certain 200-OK payloads that still indicate backend overload.
+  - uses `GET /v3/search/works` with query params `q`, `limit`, `offset`, `scroll=false`, `stats=false`.
   - returns partial results when later pages fail, rather than failing the whole run.
 
 #### `scopus` — Elsevier Scopus Search API
@@ -336,7 +332,7 @@ retries:
   backoff: 1.5
 ```
 
-See `configs/config.yaml.example` for the full template (including `impact_factor`).
+See `configs/config.yaml.example` for the full template (including `impact_factor` and `diagnostics`).
 
 Optional Scopus block:
 ```yaml
@@ -361,6 +357,30 @@ scopus:
     cache_ttl_days: 30
     rate_limit: 1.0
 ```
+
+Optional diagnostics capture block:
+```yaml
+diagnostics:
+  enabled: true
+  capture_samples: true
+  capture_requests: true
+  max_sample_records: 2
+  max_enrich_trace_entries: 5
+  max_request_logs: 20
+  redact_fields: ["apiKey", "insttoken", "Authorization", "X-ELS-APIKey"]
+```
+
+When diagnostics are enabled, `results/diagnostics.json` includes sampled:
+- raw payload snippets,
+- canonical normalized records,
+- mapping attempts (`publisher`/`issn`/`citations`/`doi`), and
+- per-record enrichment trace (`strategy`, status, result counts, notes).
+
+It also includes `platform_capabilities` flags such as `citations_available` and
+`citations_reason` so citation-based metrics can be explicitly disabled when a source
+is structurally unreliable (for example CORE returning all-zero `citationCount`).
+
+Sensitive values are redacted by key and request URLs are stored without query strings.
 
 ### Query file format
 `queries_file` is read with `csv.DictReader` and must include a header row. The pipeline uses:
@@ -392,7 +412,7 @@ Common variables:
 - `SCOPUS_RANKINGS_VIEW_PREFERENCE` (default `ENHANCED,STANDARD`)
 - `SCOPUS_RANKINGS_TIMEOUT_S`, `SCOPUS_RANKINGS_CACHE_TTL_DAYS`, `SCOPUS_RANKINGS_RPS`
 - `CORE_RANKINGS_PATH` (optional; override CORE rankings dataset path)
-- `CORE_SEARCH_METHOD` (`AUTO`/`GET`/`POST`, default `AUTO`)
+- `CORE_API_BASE_URL` (default `https://api.core.ac.uk`)
 - `AI_BIAS_USER_AGENT` (used by `core` and `semanticscholar`)
 
 ---
@@ -457,6 +477,8 @@ docker compose run --rm ai-bias-search just pipeline CONFIG=/app/config.yaml
   - `results/metrics/<timestamp>.json`
 - Diagnostics JSON:
   - `results/diagnostics.json`
+- Request diagnostics log (rolling per platform):
+  - `results/request_logs.json`
 - HTML report:
   - `results/reports/<timestamp>.html`
 - OpenAlex enrichment cache:

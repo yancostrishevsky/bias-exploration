@@ -1,6 +1,12 @@
 query_id,text
 core_001,"information retrieval conference paper"
+core_001,"information retrieval conference paper"
 core_002,"SIGIR paper neural information retrieval"
 core_003,"web search and data mining conference paper"
 core_004,"WSDM learning to rank paper"
-core_005,"ACM CIKM conference paper recommender systems"
+Q126,ethical implications of AI in clinical decision making
+Q127,open science practices in medical research review
+Q128,peer review bias in high impact journals
+Q129,conflicts of interest in medical publishing review
+Q130,methodological bias in randomized controlled trials
+

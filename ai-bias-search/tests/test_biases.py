@@ -159,6 +159,63 @@ def test_top_k_bias_metrics_mark_not_available_when_missing() -> None:
     assert top_k["citations"]["available"] is False
 
 
+def test_geo_bias_metrics_enable_country_top_k_when_coverage_sufficient() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["p1"] * 20,
+            "rank": list(range(1, 21)),
+            "countries": [["PL"]] * 10 + [["DE"]] * 5 + [["US"]] * 5,
+            "country_primary": ["PL"] * 10 + ["DE"] * 5 + ["US"] * 5,
+            "cited_by_count": list(range(100, 80, -1)),
+        }
+    )
+    metrics = compute_bias_metrics(frame, geo_min_coverage=0.4)
+    country = metrics["top_k_bias"]["country"]
+    assert country["enabled_for_bias_metrics"] is True
+    assert country["available_share"] == approx(1.0)
+    assert country["overall_distribution_variants"]["countries"]["fractional"]
+    per_k = country["per_k"]["10"]
+    assert per_k["js_divergence"] is not None
+    assert per_k["variants"]["countries"]["fractional"]["top_distribution"]
+    assert per_k["variants"]["countries"]["fractional"]["overrepresentation_ratio"]
+
+
+def test_geo_bias_metrics_compute_fractional_and_dominant_distributions() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["p1"] * 6,
+            "rank": [1, 2, 3, 4, 5, 6],
+            "countries": [["PL", "DE"], ["PL"], ["US"], ["PL", "US"], ["DE"], ["PL"]],
+            "country_primary": ["MULTI", "PL", "US", "MULTI", "DE", "PL"],
+        }
+    )
+    metrics = compute_bias_metrics(frame, geo_min_coverage=0.3)
+    country = metrics["top_k_bias"]["country"]
+    assert country["enabled_for_bias_metrics"] is True
+    overall = country["overall_distribution_variants"]["countries"]
+    assert overall["fractional"]
+    assert overall["dominant"]
+    per_k = country["per_k"]["10"]["variants"]["countries"]["fractional"]
+    assert per_k["available"] is True
+    assert per_k["js_divergence"] is not None
+    assert isinstance(per_k["overrepresentation_ratio"], dict)
+
+
+def test_geo_bias_metrics_disable_when_coverage_below_threshold() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["p1"] * 10,
+            "rank": list(range(1, 11)),
+            "countries": [["PL"], None, None, None, None, None, None, None, None, None],
+            "country_primary": ["PL", None, None, None, None, None, None, None, None, None],
+        }
+    )
+    metrics = compute_bias_metrics(frame, geo_min_coverage=0.4)
+    country = metrics["top_k_bias"]["country"]
+    assert country["enabled_for_bias_metrics"] is False
+    assert country["reason"] == "insufficient_coverage (< 0.40)"
+
+
 def test_top_k_citation_reliability_gating_blocks_unstable_delta() -> None:
     frame = pd.DataFrame(
         {
@@ -191,3 +248,67 @@ def test_multi_platform_citations_are_marked_non_comparable() -> None:
     assert metrics["rank_vs_citations"]["citations_not_cross_platform_comparable"] is True
     assert set(metrics["rank_vs_citations"]["per_platform"].keys()) == {"a", "b"}
     assert metrics["top_k_bias"]["citations"]["citations_not_cross_platform_comparable"] is True
+
+
+def test_scopus_suspicious_citations_disable_citation_bias_metrics() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["scopus"] * 30,
+            "rank": list(range(1, 31)),
+            "publication_year": [2018] * 30,
+            "cited_by_count": [0] * 30,
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    scopus = metrics["by_platform"]["scopus"]
+    assert scopus["rank_vs_citations"]["spearman"] is None
+    assert scopus["rank_vs_citations"]["reason"] == "citations_quality_suspicious"
+    assert scopus["top_k_bias"]["citations"]["available"] is False
+    assert scopus["top_k_bias"]["citations"]["note"] is not None
+    assert scopus["feature_availability"]["citations"]["available_for_bias_metrics"] is False
+    assert scopus["feature_availability"]["citations"]["quality"] == "suspicious"
+
+
+def test_core_structural_citations_disable_citation_bias_metrics() -> None:
+    current_year = datetime.utcnow().year
+    frame = pd.DataFrame(
+        {
+            "platform": ["core"] * 40,
+            "rank": list(range(1, 41)),
+            "publication_year": [None] * 40,
+            "extra": [
+                {"core": {"citationCount": 0, "acceptedDate": f"{current_year - 7}-01-01"}}
+                for _ in range(40)
+            ],
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    core = metrics["by_platform"]["core"]
+    assert metrics["platform_capabilities"]["core"]["citations_available"] is False
+    assert core["completeness"]["citations"] is None
+    assert core["rank_vs_citations"]["spearman"] is None
+    assert core["rank_vs_citations"]["reason"] == "citations_unavailable"
+    assert core["top_k_bias"]["citations"]["available"] is False
+    assert core["top_k_bias"]["citations"]["reason"] == "citations_unavailable"
+    assert core["feature_availability"]["citations"]["available_for_bias_metrics"] is False
+    assert core["feature_availability"]["citations"]["quality"] == "structurally_unavailable"
+
+
+def test_semanticscholar_structural_publisher_unavailability_skips_hhi() -> None:
+    frame = pd.DataFrame(
+        {
+            "platform": ["semanticscholar", "semanticscholar"],
+            "rank": [1, 2],
+            "title": ["A", "B"],
+            "extra": [
+                {"semanticscholar": {"journal": {"name": "J1"}, "publicationVenue": {"name": "V1"}}},
+                {"semanticscholar": {"journal": {"name": "J2"}, "publicationVenue": {"name": "V2"}}},
+            ],
+        }
+    )
+    metrics = compute_bias_metrics(frame)
+    sc = metrics["by_platform"]["semanticscholar"]
+    assert metrics["platform_capabilities"]["semanticscholar"]["publisher_available"] is False
+    assert sc["publisher_hhi"]["hhi"] is None
+    assert sc["publisher_hhi"]["available"] is False
+    assert sc["publisher_hhi"]["reason"] is not None

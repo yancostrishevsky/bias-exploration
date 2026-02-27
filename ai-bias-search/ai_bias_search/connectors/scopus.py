@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timezone
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from ai_bias_search.diagnostics.capture import capture_request
 from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig, ScopusEnrichConfig
 from ai_bias_search.utils.ids import normalise_doi
@@ -386,21 +388,38 @@ class ScopusConnector:
 
         def execute() -> dict[str, Any]:
             self.rate_limiter.acquire()
+            response: httpx.Response | None = None
+            payload: dict[str, Any] | None = None
+            started = time.perf_counter()
             LOGGER.debug(
                 "scopus request path=%s params=%s headers=%s",
                 path,
                 params,
                 mask_sensitive(headers),
             )
-            response = self.client.get(path, params=params, headers=headers)
-            traces = _trace_headers(response)
-            if traces:
-                LOGGER.debug("scopus response status=%s traces=%s", response.status_code, traces)
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ConnectorError("Scopus response is not a JSON object")
-            return payload
+            try:
+                response = self.client.get(path, params=params, headers=headers)
+                traces = _trace_headers(response)
+                if traces:
+                    LOGGER.debug("scopus response status=%s traces=%s", response.status_code, traces)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ConnectorError("Scopus response is not a JSON object")
+                return payload
+            finally:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                capture_request(
+                    platform=self.name,
+                    stage="collect",
+                    endpoint=f"{self.base_url}{path}",
+                    method="GET",
+                    params=params,
+                    headers=headers,
+                    status_code=(response.status_code if response is not None else None),
+                    duration_ms=duration_ms,
+                    response_payload=payload,
+                )
 
         return self.retrying(execute)
 
@@ -423,7 +442,8 @@ class ScopusConnector:
         issn = normalize_issn(entry.get("prism:issn") or entry.get("issn"))
         eissn = normalize_issn(entry.get("prism:eIssn") or entry.get("prism:eissn"))
         cover_date = _safe_str(entry.get("prism:coverDate") or entry.get("coverDate"))
-        citedby_count = _parse_int(entry.get("citedby-count"))
+        citedby_field_present = "citedby-count" in entry
+        citedby_count = _parse_int(entry.get("citedby-count")) if citedby_field_present else None
         openaccess_flag = _parse_openaccess_flag(entry.get("openaccessFlag"))
         source_id = _safe_str(entry.get("source-id") or entry.get("source_id"))
         publisher = _safe_str(
@@ -468,8 +488,9 @@ class ScopusConnector:
                 "cover_date": cover_date,
                 "coverDate": cover_date,
                 "cited_by_count": citedby_count,
-                "citedby-count": citedby_count,
+                "citedby-count": citedby_count if citedby_field_present else None,
                 "citations": citedby_count,
+                "citations_field_present": citedby_field_present,
                 "openaccess_flag": openaccess_flag,
                 "openaccessFlag": openaccess_flag,
                 "source_id": source_id,

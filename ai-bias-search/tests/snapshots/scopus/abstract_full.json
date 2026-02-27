@@ -1,0 +1,39 @@
+{
+  "abstracts-retrieval-response": {
+    "coredata": {
+      "dc:identifier": "SCOPUS_ID:85012345678",
+      "eid": "2-s2.0-85012345678",
+      "prism:doi": "10.1234/example",
+      "dc:title": "A paper",
+      "prism:publicationName": "Journal of Testing",
+      "prism:issn": "12345678",
+      "prism:eIssn": "87654321",
+      "prism:coverDate": "2021-05-01",
+      "subtypeDescription": "Article",
+      "citedby-count": "7",
+      "dc:description": "An abstract"
+    },
+    "authors": {
+      "author": [
+        {
+          "ce:indexed-name": "Doe, Jane"
+        }
+      ]
+    },
+    "authkeywords": {
+      "author-keyword": [
+        {
+          "$": "keyword1"
+        },
+        {
+          "$": "keyword2"
+        }
+      ]
+    },
+    "affiliation": [
+      {
+        "affiliation-country": "Poland"
+      }
+    ]
+  }
+}

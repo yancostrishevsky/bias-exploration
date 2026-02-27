@@ -8,12 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
-from diskcache import Cache
-
 from ai_bias_search.rankings.base import MatchResult, RankingConfig, RankingEntry, RankingProvider
 from ai_bias_search.rankings.base import iter_normalized_issns, normalize_title
 from ai_bias_search.rankings.io import load_config, load_dataset, resolve_dataset_path
 from ai_bias_search.rankings.match import MatchingEngine
+from ai_bias_search.utils.cache import Cache
 from ai_bias_search.utils.logging import configure_logging
 
 LOGGER = configure_logging()

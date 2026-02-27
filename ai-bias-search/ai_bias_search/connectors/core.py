@@ -1,19 +1,24 @@
-"""Connector for the CORE v3 search API.
-
-This connector is intentionally configurable via environment variables because CORE's
-API surface and authentication header conventions can vary between deployments.
-"""
+"""Connector for the CORE v3 search API."""
 
 from __future__ import annotations
 
 import os
 import re
+import time
 from datetime import date, datetime
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional
 
 import httpx
-from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import (
+    Retrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    wait_random,
+)
 
+from ai_bias_search.diagnostics.capture import capture_request
 from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import doi_from_url, normalise_doi
@@ -31,9 +36,19 @@ class CoreTransientError(ConnectorError):
     """Retryable error for transient CORE backend failures."""
 
 
+class CorePermanentError(ConnectorError):
+    """Non-retryable error that disables CORE for the current run."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _is_retryable_core_error(exc: BaseException) -> bool:
     if isinstance(exc, CoreTransientError):
         return True
+    if isinstance(exc, CorePermanentError):
+        return False
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status in (401, 403, 404):
@@ -63,7 +78,6 @@ def _parse_year(value: object) -> int | None:
             return datetime.strptime(text[: len(fmt)], fmt).year
         except ValueError:
             continue
-    # last resort: first 4 digits
     digits = "".join(ch for ch in text if ch.isdigit())
     if len(digits) >= 4:
         try:
@@ -80,12 +94,52 @@ def _clean_api_key(value: str) -> str:
     return key
 
 
-def _toggle_trailing_slash(path: str) -> str:
-    if not path:
-        return path
-    if path.endswith("/"):
-        return path.rstrip("/")
-    return f"{path}/"
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _normalize_core_base_url(base_url: str) -> str:
+    cleaned = (base_url or "").strip()
+    if not cleaned:
+        cleaned = "https://api.core.ac.uk/v3"
+    cleaned = cleaned.rstrip("/")
+
+    try:
+        parts = urlsplit(cleaned)
+    except Exception:
+        return "https://api.core.ac.uk"
+
+    path = (parts.path or "").rstrip("/")
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+def join_url(base_url: str, path: str) -> str:
+    """Join base URL and path while preventing duplicated `/v3` segments."""
+
+    normalized_base = _normalize_core_base_url(base_url)
+    base_parts = urlsplit(normalized_base)
+    base_path = (base_parts.path or "").rstrip("/")
+
+    target_path = "/" + str(path or "").strip().lstrip("/")
+    target_path = "/" + re.sub(r"/{2,}", "/", target_path).lstrip("/")
+
+    if base_path.endswith("/v3") and target_path.startswith("/v3/"):
+        target_path = target_path[3:]
+    elif base_path.endswith("/v3") and target_path == "/v3":
+        target_path = "/"
+
+    merged_path = f"{base_path}{target_path}" if base_path else target_path
+    merged_path = "/" + merged_path.lstrip("/")
+    merged_path = re.sub(r"/{2,}", "/", merged_path)
+    return urlunsplit((base_parts.scheme, base_parts.netloc, merged_path, "", ""))
 
 
 def _extract_items(payload: object) -> list[dict]:
@@ -96,7 +150,6 @@ def _extract_items(payload: object) -> list[dict]:
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
         if isinstance(value, dict):
-            # sometimes nested
             nested = _extract_items(value)
             if nested:
                 return nested
@@ -232,7 +285,6 @@ def _doi_from_item(item: dict) -> str | None:
         if doi:
             return doi
 
-    # last resort: DOI hidden inside a URL-like field
     for key in ("url", "landingPageUrl", "landing_page_url", "downloadUrl", "download_url"):
         maybe_url = item.get(key)
         doi = doi_from_url(maybe_url) if isinstance(maybe_url, str) else None
@@ -259,7 +311,7 @@ def _url_from_item(item: dict) -> str | None:
 
 
 class CoreConnector:
-    """Implementation of the CORE v3 search connector."""
+    """Implementation of the CORE search connector."""
 
     name = "core"
 
@@ -277,37 +329,44 @@ class CoreConnector:
         if not api_key:
             raise ConnectorError("Set CORE_API_KEY in .env to enable this connector")
         self.api_key = _clean_api_key(api_key)
+        self.fail_open = _env_bool("CORE_FAIL_OPEN", True)
 
-        base_url = os.getenv("CORE_API_BASE_URL", "https://api.core.ac.uk/v3").strip()
-        raw_search_path = os.getenv("CORE_SEARCH_PATH", "/search/works").strip()
-        # Swagger docs use no trailing slash; normalise to avoid redirect edge-cases.
-        self.search_path = (raw_search_path.rstrip("/") or "/search/works").strip()
-        self.query_param = os.getenv("CORE_QUERY_PARAM", "q")
-        self.limit_param = os.getenv("CORE_LIMIT_PARAM", "limit")
-        self.offset_param = os.getenv("CORE_OFFSET_PARAM", "offset")
+        base_url = _normalize_core_base_url(os.getenv("CORE_API_BASE_URL", "https://api.core.ac.uk/v3"))
+        if not urlsplit(base_url).path.endswith("/v3"):
+            base_url = join_url(base_url, "/v3")
+        self.search_url = join_url(base_url, "/search/works")
         self.max_page_size = int(os.getenv("CORE_MAX_PAGE_SIZE", "25"))
-        self.search_method = os.getenv("CORE_SEARCH_METHOD", "AUTO").strip().upper()
-        if self.search_method not in {"AUTO", "GET", "POST"}:
-            LOGGER.warning("Unknown CORE_SEARCH_METHOD=%r; defaulting to AUTO", self.search_method)
-            self.search_method = "AUTO"
-        self.auth_header = os.getenv("CORE_AUTH_HEADER", "Authorization")
-        self.auth_prefix = os.getenv("CORE_AUTH_PREFIX", "Bearer")
         self.user_agent = os.getenv(
             "AI_BIAS_USER_AGENT",
             "ai-bias-search/0.1 (+contact@example.com)",
         )
 
-        self.client = client or httpx.Client(
-            base_url=base_url,
-            timeout=30.0,
-            follow_redirects=True,
-        )
+        self.client = client or httpx.Client(timeout=30.0, follow_redirects=True)
+        self._disabled = False
+        self._disable_reason: str | None = None
+        self._request_count = 0
+        self._error_count = 0
+
+        max_attempts = max(1, int(self.retries.max))
         self.retrying = Retrying(
-            stop=stop_after_attempt(self.retries.max),
-            wait=wait_exponential(multiplier=1, exp_base=self.retries.backoff, min=1, max=10),
+            stop=stop_after_attempt(max_attempts),
+            wait=wait_exponential(multiplier=1, exp_base=self.retries.backoff, min=1, max=10)
+            + wait_random(0, 0.5),
             retry=retry_if_exception(_is_retryable_core_error),
             reraise=True,
         )
+
+    def _disable_for_run(self, reason: str) -> None:
+        self._disabled = True
+        self._disable_reason = reason
+
+    def platform_health(self) -> dict[str, Any]:
+        error_rate = (self._error_count / self._request_count) if self._request_count > 0 else 0.0
+        return {
+            "enabled": not self._disabled,
+            "reason": self._disable_reason,
+            "error_rate": error_rate,
+        }
 
     def search(
         self,
@@ -318,24 +377,54 @@ class CoreConnector:
     ) -> List[Dict[str, Any]]:
         if not query or k <= 0:
             return []
+        if self._disabled:
+            LOGGER.warning(
+                "CORE connector disabled for this run; returning empty results (reason=%s)",
+                self._disable_reason,
+            )
+            return []
 
         request_params: Dict[str, Any] = dict(params or {})
-        request_params[self.query_param] = query
-
-        per_page = min(int(request_params.pop(self.limit_param, k)), self.max_page_size, k)
-        offset = int(request_params.pop(self.offset_param, 0))
+        per_page = min(int(request_params.pop("limit", k)), self.max_page_size, k)
+        offset = int(request_params.pop("offset", 0))
 
         LOGGER.info("core.search query=%s k=%s", query, k)
 
         records: list[dict] = []
         seen_keys: set[str] = set()
         while len(records) < k:
-            page_params = dict(request_params)
-            page_params[self.limit_param] = min(per_page, k - len(records))
-            page_params[self.offset_param] = offset
+            page_params: dict[str, Any] = {
+                "q": query,
+                "limit": min(per_page, k - len(records)),
+                "offset": offset,
+                "scroll": "false",
+                "stats": "false",
+            }
 
             try:
-                payload = self._get(self.search_path, page_params)
+                payload = self._get_search(page_params)
+            except CorePermanentError as exc:
+                self._disable_for_run(str(exc))
+                if records:
+                    LOGGER.warning(
+                        "CORE disabled after collecting %d records; returning partial results",
+                        len(records),
+                    )
+                    break
+                if self.fail_open:
+                    LOGGER.warning("CORE disabled and fail-open enabled; returning empty results")
+                    return []
+                raise ConnectorError(str(exc)) from exc
+            except CoreTransientError as exc:
+                LOGGER.warning(
+                    "CORE page fetch failed with transient backend error; returning partial "
+                    "results (offset=%s limit=%s collected=%d): %s",
+                    offset,
+                    page_params["limit"],
+                    len(records),
+                    exc,
+                )
+                break
             except ConnectorError as exc:
                 if records:
                     LOGGER.warning(
@@ -343,7 +432,7 @@ class CoreConnector:
                         "results (offset=%s limit=%s): %s",
                         len(records),
                         offset,
-                        page_params[self.limit_param],
+                        page_params["limit"],
                         exc,
                     )
                     break
@@ -383,7 +472,7 @@ class CoreConnector:
                 records.append(record)
                 added += 1
 
-            requested = int(page_params[self.limit_param])
+            requested = int(page_params["limit"])
             total_hits = _total_hits(payload)
             if len(items) < requested and (
                 total_hits is None or (offset + len(items)) >= total_hits
@@ -396,114 +485,89 @@ class CoreConnector:
 
         return records
 
-    def _get(self, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
         headers: Dict[str, str] = {
+            "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
             "User-Agent": self.user_agent,
         }
-        if self.auth_header.lower() == "authorization":
-            headers[self.auth_header] = f"{self.auth_prefix} {self.api_key}".strip()
-        else:
-            headers[self.auth_header] = self.api_key
 
         def execute() -> Dict[str, Any]:
-            methods: list[str]
-            if self.search_method == "AUTO":
-                methods = ["GET", "POST"]
-            else:
-                methods = [self.search_method]
-
-            candidate_paths = [path]
-            alt_path = _toggle_trailing_slash(path)
-            if alt_path and alt_path != path:
-                candidate_paths.append(alt_path)
-
-            retryable_exc: BaseException | None = None
-            non_retryable_exc: BaseException | None = None
-            for method in methods:
-                if method == "POST":
-                    # CORE routes commonly only support POST without a trailing slash.
-                    post_path = (path.rstrip("/") or path).strip()
-                    method_paths = [post_path]
-                else:
-                    method_paths = candidate_paths
-
-                for candidate_path in method_paths:
-                    try:
-                        self.rate_limiter.acquire()
-                        LOGGER.debug(
-                            "core request method=%s path=%s params=%s headers=%s",
-                            method,
-                            candidate_path,
-                            params,
-                            mask_sensitive(headers),
+            response: httpx.Response | None = None
+            data: dict[str, Any] | None = None
+            started = time.perf_counter()
+            try:
+                self.rate_limiter.acquire()
+                LOGGER.debug(
+                    "core request method=%s endpoint=%s params=%s headers=%s",
+                    "GET",
+                    self.search_url,
+                    params,
+                    mask_sensitive(headers),
+                )
+                response = self.client.get(self.search_url, params=params, headers=headers)
+                response.raise_for_status()
+                payload_raw = response.json()
+                data = payload_raw if isinstance(payload_raw, dict) else None
+                if not isinstance(data, dict):
+                    raise ConnectorError("CORE response is not a JSON object")
+                if _is_transient_overload_payload(data) and not _has_results(data):
+                    raise CoreTransientError("CORE backend overloaded (no results returned)")
+                return data
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                try:
+                    payload_raw = exc.response.json()
+                    if isinstance(payload_raw, dict):
+                        data = payload_raw
+                except Exception:
+                    data = {
+                        "error": (
+                            exc.response.text[:300] if isinstance(exc.response.text, str) else str(exc)
                         )
-                        if method == "GET":
-                            query_params = dict(params)
-                            query_params.setdefault("scroll", "false")
-                            query_params.setdefault("stats", "false")
-                            response = self.client.get(
-                                candidate_path, params=query_params, headers=headers
-                            )
-                        elif method == "POST":
-                            body = dict(params)
-                            body.setdefault("scroll", False)
-                            body.setdefault("stats", False)
-                            response = self.client.post(candidate_path, json=body, headers=headers)
-                        else:  # pragma: no cover - defensive guard
-                            raise ConnectorError(f"Unsupported CORE search method: {method}")
-
-                        response.raise_for_status()
-                        data = response.json()
-                        if method == "GET" and candidate_path != path and path == self.search_path:
-                            self.search_path = candidate_path
-                        break
-                    except httpx.HTTPStatusError as exc:
-                        status = exc.response.status_code
-                        if status in (408, 429) or 500 <= status <= 599:
-                            retryable_exc = exc
-                        else:
-                            non_retryable_exc = exc
-
-                        if status in (404, 405) or 500 <= status <= 599:
-                            continue
-                        raise
-                else:
-                    continue
-                break
-            else:
-                if retryable_exc is not None:
-                    raise retryable_exc
-                if non_retryable_exc is not None:
-                    raise non_retryable_exc
-                raise ConnectorError("CORE request failed without a response")
-
-            if not isinstance(data, dict):
-                raise ConnectorError("CORE response is not a JSON object")
-            if _is_transient_overload_payload(data) and not _has_results(data):
-                raise CoreTransientError("CORE backend overloaded (no results returned)")
-            return data
+                    }
+                if 400 <= status <= 499 and status not in (408, 429):
+                    message = f"CORE request failed status={status} endpoint={self.search_url}"
+                    raise CorePermanentError(message, status_code=status) from exc
+                if status in (408, 429) or 500 <= status <= 599:
+                    raise CoreTransientError(
+                        f"CORE transient error status={status} endpoint={self.search_url}"
+                    ) from exc
+                snippet: str | None = None
+                try:
+                    text = exc.response.text
+                    snippet = text[:300] if text else None
+                except Exception:
+                    snippet = None
+                details = f"CORE request failed (GET): {exc}"
+                if snippet:
+                    details = f"{details} (body={snippet!r})"
+                raise ConnectorError(details) from exc
+            finally:
+                self._request_count += 1
+                if response is not None and response.status_code >= 400:
+                    self._error_count += 1
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                capture_request(
+                    platform=self.name,
+                    stage="collect",
+                    endpoint=self.search_url,
+                    method="GET",
+                    params=params,
+                    headers=headers,
+                    status_code=(response.status_code if response is not None else None),
+                    duration_ms=duration_ms,
+                    response_payload=data,
+                )
 
         try:
             return self.retrying(execute)
-        except httpx.HTTPStatusError as exc:
-            snippet: str | None = None
-            try:
-                text = exc.response.text
-                snippet = text[:300] if text else None
-            except Exception:
-                snippet = None
-            method = getattr(exc.request, "method", None)
-            details = f"CORE request failed: {exc}"
-            if method:
-                details = f"CORE request failed ({method}): {exc}"
-            if snippet:
-                details = f"{details} (body={snippet!r})"
-            raise ConnectorError(details) from exc
+        except CoreTransientError:
+            raise
+        except CorePermanentError:
+            raise
         except httpx.HTTPError as exc:
             raise ConnectorError(f"CORE request failed: {exc}") from exc
-        except CoreTransientError as exc:
-            raise ConnectorError(str(exc)) from exc
 
     def _normalize_item(self, item: dict, *, rank: int) -> Dict[str, Any]:
         title = item.get("title") or item.get("display_name") or item.get("displayName")
@@ -524,7 +588,10 @@ class CoreConnector:
         publisher_value = (
             publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
         )
-        citations = _coerce_int(item.get("citationCount") or item.get("citations"))
+        citation_raw = item.get("citationCount")
+        if citation_raw is None:
+            citation_raw = item.get("citations")
+        citations = _coerce_int(citation_raw)
 
         record = Record(
             title=title,
@@ -556,4 +623,4 @@ class CoreConnector:
             pass
 
 
-__all__ = ["CoreConnector"]
+__all__ = ["CoreConnector", "join_url"]

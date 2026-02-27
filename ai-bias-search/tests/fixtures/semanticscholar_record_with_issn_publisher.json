@@ -1,0 +1,19 @@
+{
+  "platform": "semanticscholar",
+  "title": "S2 Paper",
+  "rank": 1,
+  "extra": {
+    "semanticscholar": {
+      "journal": {
+        "name": "S2 Journal",
+        "publisher": "S2 Publisher",
+        "issn": "2049-3630"
+      },
+      "publicationVenue": {
+        "issn": ["1476-4687"]
+      },
+      "citationCount": 7,
+      "isOpenAccess": false
+    }
+  }
+}

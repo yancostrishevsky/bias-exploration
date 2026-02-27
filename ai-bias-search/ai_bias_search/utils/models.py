@@ -51,8 +51,21 @@ class EnrichedRecord(Record):
     journal_title: Optional[str] = None
     source_id: Optional[str] = None
     doc_type: Optional[str] = None
+    issn: Optional[str] = None
+    eissn: Optional[str] = None
     issn_list: Optional[List[str]] = None
+    issn_source: Optional[str] = None
+    issn_provenance: Optional[str] = None
+    year_raw: Optional[int] = Field(default=None, ge=1800, le=2100)
+    year_enriched: Optional[int] = Field(default=None, ge=1800, le=2100)
+    year_provenance: Optional[str] = None
+    countries: Optional[List[str]] = None
+    country_primary: Optional[str] = None
     affiliation_countries: Optional[List[str]] = None
+    country_dominant: Optional[str] = None
+    country_count: Optional[int] = Field(default=None, ge=0)
+    country_provenance: Optional[str] = None
+    country_is_fractional: bool = False
     affiliation_institutions: Optional[List[str]] = None
     affiliation_cities: Optional[List[str]] = None
     author_ids: Optional[List[str]] = None

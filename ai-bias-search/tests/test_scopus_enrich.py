@@ -13,10 +13,15 @@ from ai_bias_search.utils.config import RetryConfig, ScopusEnrichConfig
 from ai_bias_search.utils.rate_limit import RateLimiter
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots" / "scopus"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _snapshot(name: str) -> dict[str, Any]:
     return json.loads((SNAPSHOT_DIR / name).read_text(encoding="utf-8"))
+
+
+def _fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def test_scopus_enrich_doi_fallback_search_and_cache(
@@ -350,10 +355,13 @@ def test_scopus_enrich_401_fail_open_true_returns_partial(
 
 
 def test_scopus_enrich_abstract_fallback_full_401_meta_200(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(scopus_impl, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+    caplog.set_level("INFO")
 
     abstract_payload = _snapshot("abstract_full.json")
     attempted_views: list[str | None] = []
@@ -391,6 +399,10 @@ def test_scopus_enrich_abstract_fallback_full_401_meta_200(
     assert out["scopus_enrich_view_used"] == "META"
     assert out["scopus_enrich_downgraded"] is True
     assert out["scopus_meta"]["abstract_downgraded"] is True
+    assert any(
+        "scopus: FULL view not authorized, falling back to META" in record.message
+        for record in caplog.records
+    )
 
     client.close()
 
@@ -434,10 +446,59 @@ def test_scopus_enrich_abstract_fallback_full_meta_401_then_field_minimal_200(
         sleep=lambda _: None,
     )
     out = enricher.enrich([{"title": "A paper", "doi": "10.1234/example", "rank": 1, "extra": {}}])[0]
-    assert attempts[:3] == [("FULL", None), ("META", None), ("FULL", minimal)]
+    assert attempts[:4] == [("FULL", None), ("META", None), (None, None), ("FULL", minimal)]
     assert out["scopus_enrich_field_used"] == minimal
     assert out["scopus_enrich_downgraded"] is True
     assert out["scopus_meta"]["abstract_field_used"] == minimal
+
+    client.close()
+
+
+def test_scopus_enrich_abstract_fallback_full_then_meta_then_no_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(scopus_impl, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+
+    abstract_payload = _snapshot("abstract_full.json")
+    attempts: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/content/abstract/doi/"):
+            view = request.url.params.get("view")
+            attempts.append(view)
+            if view in {"FULL", "META"}:
+                return httpx.Response(401, json={"service-error": {"status": {"statusCode": "401"}}})
+            if view is None:
+                return httpx.Response(200, json=abstract_payload)
+        return httpx.Response(404, json={"error": "unmocked request", "url": str(request.url)})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=scopus_enrich.BASE_URL,
+        timeout=30.0,
+    )
+    enricher = scopus_enrich.ScopusEnricher(
+        ScopusEnrichConfig(
+            enabled=True,
+            fail_open=False,
+            abstract_view="FULL",
+            abstract_fallback_views=[],
+            abstract_fields_minimal=None,
+        ),
+        retries=RetryConfig(max=1, backoff=1.0),
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    out = enricher.enrich([{"title": "A paper", "doi": "10.1234/example", "rank": 1, "extra": {}}])[0]
+    assert attempts == ["FULL", "META", None]
+    assert out["scopus_id"] == "85012345678"
+    assert "scopus_enrich_view_used" not in out
+    assert out["scopus_meta"]["abstract_view_used"] is None
+    assert out["scopus_enrich_downgraded"] is True
 
     client.close()
 
@@ -539,7 +600,7 @@ def test_scopus_enrich_disables_after_auth_error_when_fail_open(
     ]
     out = enricher.enrich(records)
     assert len(out) == 2
-    assert calls["count"] == 1
+    assert calls["count"] == 3
 
     client.close()
 
@@ -585,5 +646,141 @@ def test_scopus_enrich_cache_key_includes_abstract_field(
     )
     _ = enricher_b.enrich([record])
     assert calls["count"] == 2
+
+    client.close()
+
+
+def test_clean_title_for_scopus_preserves_normal_title() -> None:
+    title = "Bridging the gap - how the gap is changing in clinical research"
+    cleaned = scopus_impl.clean_title_for_scopus(title)
+    assert cleaned == title
+    assert "  " not in cleaned
+
+
+def test_scopus_enrich_skips_char_spaced_title_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scopus_impl, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+
+    calls = {"search": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/content/search/scopus":
+            calls["search"] += 1
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=scopus_enrich.BASE_URL,
+        timeout=30.0,
+    )
+    enricher = scopus_enrich.ScopusEnricher(
+        ScopusEnrichConfig(enabled=True, title_search_enabled=True, title_search_min_len=10),
+        retries=RetryConfig(max=1, backoff=1.0),
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    record = {
+        "title": _fixture("scopus_mangled_title.json")["title"],
+        "rank": 1,
+        "extra": {},
+    }
+    out = enricher.enrich([record])[0]
+    assert calls["search"] == 0
+    assert "title_search_disabled_char_spaced" in (out.get("scopus_meta") or {}).get("notes", [])
+
+    client.close()
+
+
+def test_scopus_enrich_title_500_is_disabled_after_one_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scopus_impl, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+
+    calls = {"search": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/content/search/scopus":
+            calls["search"] += 1
+            return httpx.Response(
+                500,
+                json={"service-error": {"status": {"statusText": "Error transforming XML with XSL"}}},
+            )
+        return httpx.Response(404, json={"error": "unexpected"})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=scopus_enrich.BASE_URL,
+        timeout=30.0,
+    )
+    enricher = scopus_enrich.ScopusEnricher(
+        ScopusEnrichConfig(enabled=True, title_search_enabled=True, title_search_min_len=10),
+        retries=RetryConfig(max=3, backoff=1.0),
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    out = enricher.enrich([{"title": "Bridging the gap in clinical work", "rank": 1, "extra": {}}])[0]
+    assert calls["search"] == 2
+    assert "disabled_title_after_500" in (out.get("scopus_meta") or {}).get("notes", [])
+    trace = (out.get("scopus_meta") or {}).get("enrich_trace") or []
+    assert any(item.get("note") == "disabled_title_after_500" for item in trace)
+
+    client.close()
+
+
+def test_scopus_enrich_uses_title_after_doi_search_zero_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scopus_impl, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+    scopus_search_payload = _fixture("scopus_search_payload_with_fields.json")
+
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/content/abstract/doi/"):
+            return httpx.Response(404, json={"error": "doi abstract missing"})
+        if request.url.path == "/content/search/scopus":
+            query = request.url.params.get("query", "")
+            queries.append(query)
+            if query.startswith("DOI("):
+                return httpx.Response(200, json={"search-results": {"opensearch:totalResults": "0", "entry": []}})
+            if query.startswith("TITLE("):
+                return httpx.Response(
+                    200,
+                    json=scopus_search_payload,
+                )
+        if request.url.path == "/content/abstract/scopus_id/85012345678":
+            return httpx.Response(200, json=_snapshot("abstract_full.json"))
+        return httpx.Response(404, json={"error": "unmocked request", "url": str(request.url)})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        base_url=scopus_enrich.BASE_URL,
+        timeout=30.0,
+    )
+    enricher = scopus_enrich.ScopusEnricher(
+        ScopusEnrichConfig(enabled=True, title_search_enabled=True, title_search_min_len=10),
+        retries=RetryConfig(max=1, backoff=1.0),
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    out = enricher.enrich(
+        [{"title": "Bridging the gap in clinical work", "doi": "10.1234/example", "rank": 1, "extra": {}}]
+    )[0]
+    assert out["scopus_id"] == "85012345678"
+    assert queries[0].startswith("DOI(")
+    assert queries[1].startswith("TITLE(")
+    trace = (out.get("scopus_meta") or {}).get("enrich_trace") or []
+    assert any(item.get("strategy") == "doi_search" for item in trace)
+    assert any(item.get("strategy") == "title_search" for item in trace)
 
     client.close()

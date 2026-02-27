@@ -135,6 +135,54 @@ def test_scopus_connector_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
 
+def test_scopus_connector_citations_missing_vs_explicit_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SCOPUS_API_KEY", "test-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "search-results": {
+                    "entry": [
+                        {
+                            "dc:identifier": "SCOPUS_ID:85000000001",
+                            "dc:title": "With explicit zero",
+                            "prism:coverDate": "2021-01-01",
+                            "citedby-count": "0",
+                        },
+                        {
+                            "dc:identifier": "SCOPUS_ID:85000000002",
+                            "dc:title": "Missing citedby-count",
+                            "prism:coverDate": "2021-01-01",
+                        },
+                    ]
+                }
+            },
+        )
+
+    client = httpx.Client(
+        base_url="https://api.elsevier.com",
+        transport=httpx.MockTransport(handler),
+        timeout=30.0,
+    )
+    connector = ScopusConnector(
+        rate_limiter=RateLimiter(rate=1000, burst=1000),
+        retries=RetryConfig(max=1, backoff=1.0),
+        client=client,
+        config=ScopusEnrichConfig(enabled=True, page_size=10, max_records_per_query=10),
+    )
+
+    records = connector.search("llm", k=2)
+    assert records[0]["citations"] == 0
+    assert records[0]["citations_field_present"] is True
+    assert records[1]["citations"] is None
+    assert records[1]["citations_field_present"] is False
+
+    client.close()
+
+
 def test_config_accepts_scopus_alias_block() -> None:
     cfg = AppConfig.model_validate(
         {

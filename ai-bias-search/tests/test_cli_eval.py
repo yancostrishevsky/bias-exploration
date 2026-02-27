@@ -59,6 +59,24 @@ retries: { max: 1, backoff: 1.0 }
             "nested": {"missing": np.nan},
         },
     )
+    monkeypatch.setattr(
+        cli,
+        "run_sanity_checks",
+        lambda *_args, **_kwargs: {
+            "generated_at": "2026-02-26T00:00:00Z",
+            "total_records": np.int64(1),
+            "samples": {
+                "openalex": [
+                    {
+                        "raw_record": {
+                            "issn": np.array(["1234-5678", "8765-4321"], dtype=object),
+                        }
+                    }
+                ]
+            },
+            "warnings": [],
+        },
+    )
 
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(
@@ -78,3 +96,8 @@ retries: { max: 1, backoff: 1.0 }
 
     diagnostics_path = tmp_path / "results" / "diagnostics.json"
     assert diagnostics_path.exists()
+    diagnostics_payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics_payload["samples"]["openalex"][0]["raw_record"]["issn"] == [
+        "1234-5678",
+        "8765-4321",
+    ]

@@ -16,6 +16,16 @@ rate_limit:
 retries:
   max: 3
   backoff: 1.5
+diagnostics:
+  enabled: true
+  capture_samples: true
+  capture_requests: true
+  max_sample_records: 2
+  max_enrich_trace_entries: 5
+  max_request_logs: 20
+  redact_fields: ["apiKey", "insttoken", "Authorization", "X-ELS-APIKey"]
+geo:
+  top_k_country_min_coverage: 0.4
 impact_factor:
   enabled: true
   xlsx_path: "data/vendor/jif.xlsx"

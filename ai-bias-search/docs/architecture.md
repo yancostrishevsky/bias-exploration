@@ -34,12 +34,14 @@ Inputs:
 Processing:
 - Concatenates records across platforms.
 - Enriches each record with OpenAlex metadata via `ai_bias_search/normalization/openalex_enrich.py`.
+- Optionally enriches missing metadata from Elsevier Scopus if `scopus.enabled` (or legacy `scopus_enrich.enabled`) is true in the YAML config.
 - Optionally enriches journal impact-factor fields if `impact_factor.enabled` is true in the YAML config.
 
 Outputs:
 - `data/enriched/<timestamp>.parquet`
 - cache side effects:
   - `data/cache/openalex/` (DiskCache; 7-day TTL on entries)
+  - `data/cache/scopus/` (DiskCache; TTL controlled by `scopus.cache_ttl_days`)
 
 ### 3) Eval
 
@@ -88,4 +90,3 @@ The system uses dictionary records rather than a strict schema at the storage bo
 - `ai_bias_search/utils/models.py:EnrichedRecord`
 
 The Parquet dataset is the primary “analysis-ready” artifact for downstream evaluation and reporting.
-

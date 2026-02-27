@@ -11,10 +11,10 @@ from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import quote
 
 import httpx
-from diskcache import Cache
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ai_bias_search.rankings.base import normalize_issn
+from ai_bias_search.utils.cache import Cache
 from ai_bias_search.utils.config import RetryConfig, ScopusRankingConfig
 from ai_bias_search.utils.logging import configure_logging, mask_sensitive
 from ai_bias_search.utils.rate_limit import RateLimiter

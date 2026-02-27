@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from typing import Any
 
 import httpx
@@ -7,41 +8,25 @@ import pytest
 from ai_bias_search.normalization import openalex_enrich
 
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
 def test_enrich_with_openalex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Redirect cache to temporary test directory
     monkeypatch.setattr(openalex_enrich, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(openalex_enrich, "lookup_core_rank", lambda **_: "A*")
+    openalex_work = _fixture("openalex_work_with_publishers.json")
+    requests: list[tuple[str, dict[str, str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.host == "api.openalex.org":
-            if request.url.path == "/works/doi:10.1234/example":
-                return httpx.Response(200, json={"id": "https://openalex.org/W123"})
-            if request.url.path == "/works/W123":
-                return httpx.Response(
-                    200,
-                    json={
-                        "language": "en",
-                        "open_access": {"is_oa": True},
-                        "publication_year": 2023,
-                        "primary_location": {
-                            "source": {
-                                "display_name": (
-                                    "ACM Conference on Computer and Communications Security"
-                                ),
-                                "type": "conference",
-                                "publisher": "ACM",
-                                "is_core": True,
-                                "abbreviated_title": "CCS",
-                            },
-                            "raw_source_name": "ACM CCS",
-                        },
-                        "host_venue": {
-                            "display_name": "Fallback Venue",
-                            "publisher": "Fallback Publisher",
-                        },
-                        "cited_by_count": 42,
-                    },
-                )
+            requests.append((request.url.path, dict(request.url.params)))
+            if request.url.path == "/works" and request.url.params.get("filter") == "doi:10.1234/example":
+                return httpx.Response(200, json={"results": [openalex_work]})
         return httpx.Response(404, json={"error": "unmocked request", "url": str(request.url)})
 
     transport = httpx.MockTransport(handler)
@@ -57,9 +42,9 @@ def test_enrich_with_openalex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         {
             "title": "A paper",
             "doi": "10.1234/example",
+            "raw_id": "0195be9b2cf9cd7052ef359ff4167d63d0e80161",
             "url": None,
             "rank": 1,
-            "raw_id": None,
             "source": None,
             "year": 2023,
             "authors": ["Doe"],
@@ -77,6 +62,12 @@ def test_enrich_with_openalex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert enriched_record["core_rank"] == "A*"
     assert enriched_record["publisher"] == "ACM"
     assert enriched_record["cited_by_count"] == 42
+    assert any(
+        path == "/works" and params.get("filter") == "doi:10.1234/example"
+        for path, params in requests
+    )
+    assert all(params.get("search") != "0195be9b2cf9cd7052ef359ff4167d63d0e80161" for _, params in requests)
+    assert enriched_record["extra"]["enrich_trace"][0]["strategy"] == "doi_filter"
 
 
 def test_extract_venue_candidates_ignores_roman_acronym() -> None:

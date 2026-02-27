@@ -2,472 +2,1188 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bias exploration</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 1.5rem; color: #222; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
-    th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
-    th { background-color: #f5f5f5; }
-    h1, h2 { color: #333; }
-    pre { background-color: #f5f5f5; padding: 0.5rem; overflow-x: auto; }
-    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
-    .chart-card { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; background: #fafafa; }
-    .chart-card h3 { margin-top: 0; }
-    .chart-card img { max-width: 100%; height: auto; display: block; }
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --line: #d8dde3;
+      --text: #1f2a35;
+      --muted: #5d6b79;
+      --accent: #1f7a8c;
+      --accent-2: #bf4f34;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--text);
+      background: linear-gradient(180deg, #f8fafc 0%, #eef3f7 100%);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 1rem;
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+    .sidebar {
+      position: sticky;
+      top: 1rem;
+      align-self: start;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem;
+      max-height: calc(100vh - 2rem);
+      overflow: auto;
+    }
+    .sidebar h2 { margin: 0 0 0.75rem; font-size: 1rem; }
+    .sidebar a {
+      display: block;
+      color: var(--muted);
+      text-decoration: none;
+      margin: 0.32rem 0;
+      padding: 0.2rem 0.25rem;
+      border-radius: 6px;
+    }
+    .sidebar a:hover { background: #eef4f9; color: var(--text); }
+    main { min-width: 0; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    h1 { margin: 0 0 0.2rem; font-size: 1.8rem; }
+    h2 { margin-top: 0; }
+    .muted { color: var(--muted); }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 0.7rem;
+      margin-bottom: 0.9rem;
+    }
+    .controls label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .controls select,
+    .controls input[type="text"] {
+      width: 100%;
+      padding: 0.45rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+    }
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 1.2rem;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 0.9rem;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.7rem;
+      margin-bottom: 0.8rem;
+    }
+    .stat-card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.65rem;
+      background: #fcfdff;
+    }
+    .stat-card .label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .stat-card .value {
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .chart-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0.75rem;
+      background: #fcfdff;
+    }
+    .chart-card h3 { margin: 0 0 0.45rem; font-size: 1rem; }
+    .chart-box { min-height: 260px; }
+    .plot-placeholder { color: #8b1f1f; font-size: 0.86rem; margin-top: 0.45rem; }
+
+    .warning-list { margin: 0; padding-left: 1.1rem; }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.5rem 0.7rem;
+      margin: 0.6rem 0;
+      background: #fbfcfe;
+    }
+    details > summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.84rem;
+      background: #f5f7fa;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.6rem;
+      overflow-x: auto;
+    }
+
+    .table-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 0.45rem;
+    }
+    .table-filter {
+      padding: 0.38rem 0.45rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-width: 220px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+      background: white;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 0.42rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      cursor: pointer;
+      background: #eef4f8;
+      user-select: none;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+
+    .downloads a { color: var(--accent); }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static; max-height: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>AI Bias exploration Report</h1>
-  <section>
-    <h2>Summary</h2>
-    <p>Total records: {{ summary.total_records }}</p>
-    <p>Platforms: {{ summary.platforms | join(", ") }}</p>
-  </section>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>Contents</h2>
+      <a href="#summary">Summary</a>
+      <a href="#interactive">Interactive Charts</a>
+      <a href="#compare">Platform Compare</a>
+      <a href="#missingness">Missingness</a>
+      <a href="#enrichment">Enrichment Gain</a>
+      <a href="#overlap">Record Overlap</a>
+      <a href="#rank-bias">Ranking Bias</a>
+      <a href="#geo-bias">Geo Bias</a>
+      <a href="#venue-diversity">Venue Diversity</a>
+      <a href="#notes">Notes / Gating</a>
+      <a href="#downloads">Download data</a>
+      <a href="#jif-jcr">JIF / JCR</a>
+      <a href="#tables">Tables</a>
+      <a href="#raw-json">Raw JSON</a>
+    </aside>
 
-  <section>
-    <h2>Visualizations</h2>
-    {% if plots %}
-    <div class="charts">
-      {% for plot in plots %}
-      <div class="chart-card">
-        <h3>{{ plot.title }}</h3>
-        <img src="data:image/png;base64,{{ plot.data_url }}" alt="{{ plot.title }}" />
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p>No visualizations available.</p>
-    {% endif %}
-  </section>
+    <main>
+      <section id="summary" class="card">
+        <h1>AI Bias exploration Report</h1>
+        <p class="muted">Total records: {{ summary.total_records }} | Platforms: {{ summary.platforms | join(", ") }}</p>
+        {% if metrics_timestamp %}
+        <p class="muted">Metrics ({{ metrics_timestamp }})</p>
+        {% else %}
+        <p class="muted">No metrics available.</p>
+        {% endif %}
+      </section>
 
-  <section>
-    <h2>Metrics{% if metrics_timestamp %} ({{ metrics_timestamp }}){% endif %}</h2>
-    {% if latest_metrics %}
-      {% if latest_metrics.biases %}
-      <h3>Bias metrics (overall)</h3>
-      {% if latest_metrics.biases.citations_not_cross_platform_comparable %}
-      <p><em>Note: citations are reported per platform and are not treated as cross-platform comparable.</em></p>
-      {% endif %}
-      <pre>{{ latest_metrics.biases | tojson(indent=2) }}</pre>
-      {% if latest_metrics.biases.by_platform %}
-      <h4>Bias metrics by platform</h4>
-      {% for platform, vals in latest_metrics.biases.by_platform.items() %}
-      <h5>{{ platform }}</h5>
-      <pre>{{ vals | tojson(indent=2) }}</pre>
-      {% endfor %}
-      {% endif %}
-      {% endif %}
+      <section id="interactive" class="card">
+        <h2>Interactive visualizations</h2>
+        <div class="controls">
+          <div>
+            <label for="platform-filter">Platform</label>
+            <select id="platform-filter">
+              {% for platform in interactive.payload.platforms %}
+              <option value="{{ platform }}">{{ platform }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="metric-group-filter">Metric Group</label>
+            <select id="metric-group-filter">
+              {% for group in interactive.payload.metric_groups %}
+              <option value="{{ group.id }}">{{ group.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="top-k-filter">Top-K</label>
+            <select id="top-k-filter">
+              {% for k in interactive.payload.top_ks %}
+              <option value="{{ k }}">{{ k }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="compare-mode-filter">Compare Mode</label>
+            <select id="compare-mode-filter">
+              {% for mode in interactive.payload.compare_modes %}
+              <option value="{{ mode }}">{{ mode }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="toggle"><input type="checkbox" id="hide-low-reliability" /><label for="hide-low-reliability">Hide low-reliability</label></div>
+          <div class="toggle"><input type="checkbox" id="show-missingness-overlay" /><label for="show-missingness-overlay">Show missingness overlay</label></div>
+        </div>
 
-      <h3>Pairwise ranking similarity</h3>
-      {% if latest_metrics.pairwise %}
-      <table>
-        <thead>
-          <tr>
-            <th>Platform pair</th>
-            <th>Jaccard</th>
-            <th>Overlap@k</th>
-            <th>RBO</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for key, vals in latest_metrics.pairwise.items() %}
-          <tr>
-            <td>{{ key }}</td>
-            {% set j = vals.get("jaccard") %}
-            {% set o = vals.get("overlap_at_k") %}
-            {% set r = vals.get("rbo") %}
-            <td>{{ "%.3f"|format(j) if j is not none else "N/A" }}</td>
-            <td>{{ "%.3f"|format(o) if o is not none else "N/A" }}</td>
-            <td>{{ "%.3f"|format(r) if r is not none else "N/A" }}</td>
-          </tr>
+        <div class="chart-grid">
+          <div class="chart-card" data-group="recency">
+            <h3>Recency Distribution</h3>
+            <div id="chart-recency" class="chart-box"></div>
+            <div id="placeholder-recency" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="citations">
+            <h3>Rank vs Citations</h3>
+            <div id="chart-rank-citations" class="chart-box"></div>
+            <div id="placeholder-rank-citations" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="oa">
+            <h3>OA Top-K vs Overall</h3>
+            <div id="chart-oa-topk" class="chart-box"></div>
+            <div id="placeholder-oa-topk" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="doc_type">
+            <h3>Doc Type Top-K vs Overall</h3>
+            <div id="chart-doc-type" class="chart-box"></div>
+            <div id="placeholder-doc-type" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="venue_concentration">
+            <h3>Publisher Concentration (HHI)</h3>
+            <div id="chart-hhi" class="chart-box"></div>
+            <div id="placeholder-hhi" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="oa">
+            <h3>OA Share vs Recency</h3>
+            <div id="chart-oa-recency" class="chart-box"></div>
+            <div id="placeholder-oa-recency" class="plot-placeholder"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="compare" class="card">
+        <h2>Platform Compare</h2>
+        <div id="chart-platform-compare" class="chart-box"></div>
+        <div id="placeholder-platform-compare" class="plot-placeholder"></div>
+      </section>
+
+      <section id="missingness" class="card">
+        <h2>Missingness Heatmap</h2>
+        <div id="chart-missingness" class="chart-box"></div>
+        <div id="placeholder-missingness" class="plot-placeholder"></div>
+      </section>
+
+      <section id="enrichment" class="card">
+        <h2>Enrichment Gain (Before vs After)</h2>
+        <div id="chart-enrichment-gain" class="chart-box"></div>
+        <div id="placeholder-enrichment-gain" class="plot-placeholder"></div>
+      </section>
+
+      <section id="overlap" class="card">
+        <h2>Record Overlap (Jaccard Heatmap)</h2>
+        <div id="chart-overlap" class="chart-box"></div>
+        <div id="placeholder-overlap" class="plot-placeholder"></div>
+      </section>
+
+      <section id="rank-bias" class="card">
+        <h2>Ranking Bias Panels</h2>
+        <div class="chart-grid">
+          <div class="chart-card">
+            <h3>CORE Rank (A*+A) Share: Top-K vs Rest</h3>
+            <div id="chart-core-rank-bias" class="chart-box"></div>
+            <div id="placeholder-core-rank-bias" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card">
+            <h3>JIF Quartile (Q1) Share: Top-K vs Rest</h3>
+            <div id="chart-jif-quartile-bias" class="chart-box"></div>
+            <div id="placeholder-jif-quartile-bias" class="plot-placeholder"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="geo-bias" class="card">
+        <h2>Geo Bias</h2>
+        <div class="controls">
+          <div>
+            <label for="geo-variant-filter">Geo Variant</label>
+            <select id="geo-variant-filter">
+              <option value="fractional">fractional</option>
+              <option value="dominant">dominant</option>
+            </select>
+          </div>
+          <div>
+            <label for="geo-granularity-filter">Geo Granularity</label>
+            <select id="geo-granularity-filter">
+              <option value="countries">countries</option>
+              <option value="regions">regions</option>
+            </select>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="label">Available share</div>
+            <div id="geo-available-share" class="value">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Multi-country share</div>
+            <div id="geo-multi-share" class="value">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Bias gating</div>
+            <div id="geo-enabled" class="value">-</div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Gating reason</div>
+            <div id="geo-reason" class="value">-</div>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-card" data-group="geo">
+            <h3>Top Geo Distribution: overall vs top-k</h3>
+            <div id="chart-geo-top" class="chart-box"></div>
+            <div id="placeholder-geo-top" class="plot-placeholder"></div>
+          </div>
+          <div class="chart-card" data-group="geo">
+            <h3>Geo Over/Under Representation</h3>
+            <div id="chart-geo-overunder" class="chart-box"></div>
+            <div id="placeholder-geo-overunder" class="plot-placeholder"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="venue-diversity" class="card">
+        <h2>Venue Diversity</h2>
+        <div id="chart-venue-diversity" class="chart-box"></div>
+        <div id="placeholder-venue-diversity" class="plot-placeholder"></div>
+      </section>
+
+      <section id="notes" class="card">
+        <h2>Notes / Gating</h2>
+        {% if interactive.payload.warnings %}
+        <ul class="warning-list" id="gating-notes">
+          {% for warning in interactive.payload.warnings %}
+          <li>{{ warning }}</li>
           {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p>No pairwise metrics available.</p>
-      {% endif %}
-
-      {% if latest_metrics.source %}
-      <p><em>Metrics source: {{ latest_metrics.source }}</em></p>
-      {% endif %}
-    {% else %}
-    <p>No metrics available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Bias Features Availability by Platform</h2>
-    {% if bias_features_availability %}
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Total</th>
-          <th>OA available</th>
-          <th>Country available</th>
-          <th>Citations available</th>
-          <th>Doc type available</th>
-          <th>Publisher available</th>
-          <th>ISSN available</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in bias_features_availability %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.total }}</td>
-          <td>{{ row.oa_count }} ({{ "%.1f%%"|format(row.oa_pct) }})</td>
-          <td>{{ row.country_count }} ({{ "%.1f%%"|format(row.country_pct) }})</td>
-          <td>{{ row.citations_count }} ({{ "%.1f%%"|format(row.citations_pct) }})</td>
-          <td>{{ row.doc_type_count }} ({{ "%.1f%%"|format(row.doc_type_pct) }})</td>
-          <td>{{ row.publisher_count }} ({{ "%.1f%%"|format(row.publisher_pct) }})</td>
-          <td>{{ row.issn_count }} ({{ "%.1f%%"|format(row.issn_pct) }})</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No bias feature availability summary available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Top-K Bias Summary</h2>
-    {% if top_k_bias_summary %}
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>K</th>
-          <th>OA top-K</th>
-          <th>OA overall</th>
-          <th>OA delta</th>
-          <th>OA reliability</th>
-          <th>Country JS divergence</th>
-          <th>Country reliability</th>
-          <th>Doc type JS divergence</th>
-          <th>Doc type reliability</th>
-          <th>Citation Spearman</th>
-          <th>Citations median top-K</th>
-          <th>Citations median rest</th>
-          <th>Citations reliability</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in top_k_bias_summary %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.k }}</td>
-          <td>{{ "%.3f"|format(row.oa_top_k_share) if row.oa_top_k_share is not none else "N/A" }}</td>
-          <td>{{ "%.3f"|format(row.oa_overall_share) if row.oa_overall_share is not none else "N/A" }}</td>
-          <td>{{ "%.3f"|format(row.oa_delta_share) if row.oa_delta_share is not none else "N/A" }}</td>
-          <td>{{ row.oa_reliability if row.oa_reliability is not none else "N/A" }}</td>
-          <td>{{ "%.3f"|format(row.country_js_divergence) if row.country_js_divergence is not none else "N/A" }}</td>
-          <td>{{ row.country_reliability if row.country_reliability is not none else "N/A" }}</td>
-          <td>{{ "%.3f"|format(row.doc_type_js_divergence) if row.doc_type_js_divergence is not none else "N/A" }}</td>
-          <td>{{ row.doc_type_reliability if row.doc_type_reliability is not none else "N/A" }}</td>
-          <td>{{ "%.3f"|format(row.citation_spearman) if row.citation_spearman is not none else "N/A" }}</td>
-          <td>{{ "%.2f"|format(row.citation_median_top_k) if row.citation_median_top_k is not none else "N/A" }}</td>
-          <td>{{ "%.2f"|format(row.citation_median_rest) if row.citation_median_rest is not none else "N/A" }}</td>
-          <td>{{ row.citation_reliability if row.citation_reliability is not none else "N/A" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No top-k bias summary available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>CORE match source breakdown</h2>
-    {% if core_match_source_breakdown %}
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Total</th>
-          <th>Matched</th>
-          <th>Matched %</th>
-          <th>ISSN</th>
-          <th>Title</th>
-          <th>Fuzzy</th>
-          <th>Unmatched</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in core_match_source_breakdown %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.total }}</td>
-          <td>{{ row.matched_count }}</td>
-          <td>{{ "%.1f%%"|format(row.matched_pct) }}</td>
-          <td>{{ row.issn_count }}</td>
-          <td>{{ row.title_count }}</td>
-          <td>{{ row.fuzzy_count }}</td>
-          <td>{{ row.unmatched_count }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No CORE matching source summary available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Citations quality diagnostics</h2>
-    {% if citations_quality_rows %}
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Total</th>
-          <th>Known citations</th>
-          <th>Quality ok</th>
-          <th>Quality missing</th>
-          <th>Quality suspicious</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in citations_quality_rows %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.total }}</td>
-          <td>{{ row.known_count }} ({{ "%.1f%%"|format(row.known_pct) }})</td>
-          <td>{{ row.ok_count }}</td>
-          <td>{{ row.missing_count }}</td>
-          <td>{{ row.suspicious_count }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No citations quality diagnostics available.</p>
-    {% endif %}
-
-    {% if diagnostics and diagnostics.warnings %}
-    <h3>Sanity warnings</h3>
-    <ul>
-      {% for warning in diagnostics.warnings %}
-      <li>{{ warning }}</li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>CORE ranking</h2>
-    {% if core_ranking_table %}
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Eligible records</th>
-          <th>A* count</th>
-          <th>A* share</th>
-          <th>A count</th>
-          <th>A share</th>
-          <th>B count</th>
-          <th>B share</th>
-          <th>C count</th>
-          <th>C share</th>
-          <th>Missing count</th>
-          <th>Missing share</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in core_ranking_table %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
-          <td>{{ row.a_star_count if row.a_star_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.a_star_share * 100) if row.a_star_share is not none else "N/A" }}</td>
-          <td>{{ row.a_count if row.a_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.a_share * 100) if row.a_share is not none else "N/A" }}</td>
-          <td>{{ row.b_count if row.b_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.b_share * 100) if row.b_share is not none else "N/A" }}</td>
-          <td>{{ row.c_count if row.c_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.c_share * 100) if row.c_share is not none else "N/A" }}</td>
-          <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.missing_share * 100) if row.missing_share is not none else "N/A" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No CORE ranking summary available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Rankings coverage</h2>
-    {% if rankings_coverage_table %}
-    <table>
-      <thead>
-        <tr>
-          <th>Ranking</th>
-          <th>Matched</th>
-          <th>Total</th>
-          <th>Matched %</th>
-          <th>Method breakdown</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in rankings_coverage_table %}
-        <tr>
-          <td>{{ row.ranking_id }}</td>
-          <td>{{ row.matched_count }}</td>
-          <td>{{ row.total }}</td>
-          <td>{{ "%.1f%%"|format(row.matched_pct) }}</td>
-          <td>{{ row.method_breakdown }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No ranking coverage summary available.</p>
-    {% endif %}
-  </section>
-
-  <section>
-    <h2>Journal Impact Factor (JIF/JCR)</h2>
-    <p>
-      Optional JIF/JCR enrichment can reveal systematic differences in journal visibility/coverage across platforms
-      (match quality, quartiles, publishers).
-    </p>
-    {% if jif_enabled %}
-      <p>Coverage: {{ "%.1f%%"|format(jif_coverage_pct) }} of records have an impact factor.</p>
-      {% if jif_publisher_hhi_text %}
-      <p><em>{{ jif_publisher_hhi_text }}</em></p>
-      {% endif %}
-      {% if jif_rank_corr_text %}
-      <p><em>{{ jif_rank_corr_text }}</em></p>
-      {% endif %}
-      <div class="charts">
-        {% if jif_match_plot_png %}
-        <div class="chart-card">
-          <h3>JIF match quality</h3>
-          <img src="data:image/png;base64,{{ jif_match_plot_png }}" alt="JIF match quality" />
-        </div>
+        </ul>
+        {% else %}
+        <p class="muted">No gating warnings.</p>
         {% endif %}
-        {% if jif_distribution_plot_png %}
-        <div class="chart-card">
-          <h3>Impact factor distribution</h3>
-          <img src="data:image/png;base64,{{ jif_distribution_plot_png }}" alt="Impact factor distribution" />
-        </div>
-        {% endif %}
-        {% if jif_quartile_plot_png %}
-        <div class="chart-card">
-          <h3>JCR quartiles</h3>
-          <img src="data:image/png;base64,{{ jif_quartile_plot_png }}" alt="JCR quartile distribution" />
-        </div>
-        {% endif %}
-        {% if jif_publisher_plot_png %}
-        <div class="chart-card">
-          <h3>Top JCR publishers</h3>
-          <img src="data:image/png;base64,{{ jif_publisher_plot_png }}" alt="Top JCR publishers" />
-        </div>
-        {% endif %}
-        {% if jif_rank_plot_png %}
-        <div class="chart-card">
-          <h3>Rank vs impact factor</h3>
-          <img src="data:image/png;base64,{{ jif_rank_plot_png }}" alt="Rank vs impact factor" />
-        </div>
-        {% endif %}
-      </div>
-    {% else %}
-      <p>{{ jif_message }}</p>
-    {% endif %}
-    {% if jcr_summary %}
-    <h3>Summary table</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Platform</th>
-          <th>Eligible records</th>
-          <th>Mean impact factor</th>
-          <th>Median impact factor</th>
-          <th>Median JCI</th>
-          <th>Q1 share</th>
-          <th>Top publishers</th>
-          <th>Missing count</th>
-          <th>Missing share</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in jcr_summary %}
-        <tr>
-          <td>{{ row.platform }}</td>
-          <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
-          <td>{{ "%.2f"|format(row.mean) if row.mean is not none else "N/A" }}</td>
-          <td>{{ "%.2f"|format(row.median) if row.median is not none else "N/A" }}</td>
-          <td>{{ "%.2f"|format(row.median_jci) if row.median_jci is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.q1_share * 100) if row.q1_share is not none else "N/A" }}</td>
-          <td>{{ row.top_publishers if row.top_publishers is not none else "N/A" }}</td>
-          <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
-          <td>{{ "%.1f%%"|format(row.missing_share * 100) if row.missing_share is not none else "N/A" }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-  </section>
+      </section>
 
-  <section>
-    <h2>Scopus enrichment</h2>
-    {% if scopus_summary %}
-    <table>
-      <thead>
-        <tr>
-          <th>Total records</th>
-          <th>Scopus enriched</th>
-          <th>Scopus enriched %</th>
-          <th>With cited-by count</th>
-          <th>With serial metrics</th>
-          <th>With citation overview</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>{{ scopus_summary.total }}</td>
-          <td>{{ scopus_summary.enriched_count }}</td>
-          <td>{{ "%.1f%%"|format(scopus_summary.enriched_pct) }}</td>
-          <td>{{ scopus_summary.with_citedby_count }}</td>
-          <td>{{ scopus_summary.with_serial_metrics }}</td>
-          <td>{{ scopus_summary.with_citation_overview }}</td>
-        </tr>
-      </tbody>
-    </table>
-    {% else %}
-    <p>No Scopus enrichment summary available.</p>
-    {% endif %}
-  </section>
+      <section id="downloads" class="card downloads">
+        <h2>Download data</h2>
+        <ul>
+          <li>
+            {% if interactive.downloads.metrics_json %}
+            <a href="{{ interactive.downloads.metrics_json }}">Metrics JSON</a>
+            {% else %}
+            Metrics JSON: unavailable
+            {% endif %}
+          </li>
+          <li>
+            {% if interactive.downloads.enriched_parquet %}
+            <a href="{{ interactive.downloads.enriched_parquet }}">Enriched Parquet</a>
+            {% else %}
+            Enriched Parquet: unavailable
+            {% endif %}
+          </li>
+          <li>
+            {% if interactive.downloads.chart_data_csv %}
+            <a href="{{ interactive.downloads.chart_data_csv }}">Chart aggregates CSV</a>
+            {% else %}
+            Chart aggregates CSV: unavailable
+            {% endif %}
+          </li>
+        </ul>
+      </section>
 
-  <section>
-    <h2>Sample Records</h2>
-    {% if table %}
-    <table>
-      <thead>
-        <tr>
-          {% for key in table[0].keys() %}
-          <th>{{ key }}</th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in table %}
-        <tr>
-          {% for value in row.values() %}
-          <td>{{ value }}</td>
-          {% endfor %}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p>No sample records available.</p>
-    {% endif %}
-  </section>
+      <section id="jif-jcr" class="card">
+        <h2>Journal Impact Factor (JIF/JCR)</h2>
+        {% if jcr_summary %}
+        <div class="table-toolbar"><input class="table-filter" data-target="table-jcr-summary" placeholder="Filter rows..." /></div>
+        <div class="table-wrap">
+          <table id="table-jcr-summary" class="js-table">
+            <thead>
+              <tr><th>Platform</th><th>Eligible</th><th>Mean IF</th><th>Median IF</th><th>Median JCI</th><th>Q1 share</th><th>Missing</th><th>Top publishers</th></tr>
+            </thead>
+            <tbody>
+              {% for row in jcr_summary %}
+              <tr>
+                <td>{{ row.platform }}</td>
+                <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
+                <td>{{ "%.3f"|format(row.mean) if row.mean is not none else "N/A" }}</td>
+                <td>{{ "%.3f"|format(row.median) if row.median is not none else "N/A" }}</td>
+                <td>{{ "%.3f"|format(row.median_jci) if row.median_jci is not none else "N/A" }}</td>
+                <td>{{ "%.3f"|format(row.q1_share) if row.q1_share is not none else "N/A" }}</td>
+                <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
+                <td>{{ row.top_publishers if row.top_publishers else "-" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="muted">No JCR summary available.</p>
+        {% endif %}
+      </section>
+
+      <section id="tables" class="card">
+        <h2>Tables</h2>
+
+        <details open>
+          <summary>Bias Features Availability by Platform</summary>
+          {% if bias_features_availability %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-bias-features" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-bias-features" class="js-table">
+              <thead>
+                <tr>
+                  <th>Platform</th><th>Total</th><th>OA %</th><th>Country %</th><th>Citations %</th><th>Doc type %</th><th>Publisher %</th><th>ISSN %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in bias_features_availability %}
+                <tr>
+                  <td>{{ row.platform }}</td>
+                  <td>{{ row.total }}</td>
+                  <td>{{ "%.1f%%"|format(row.oa_pct) }}</td>
+                  <td>{{ "%.1f%%"|format(row.country_pct) }}</td>
+                  <td>{{ "%.1f%%"|format(row.citations_pct) }}</td>
+                  <td>{{ "%.1f%%"|format(row.doc_type_pct) }}</td>
+                  <td>{{ "%.1f%%"|format(row.publisher_pct) }}</td>
+                  <td>{{ "%.1f%%"|format(row.issn_pct) }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No rows.</p>{% endif %}
+        </details>
+
+        <details>
+          <summary>Top-K Bias Summary</summary>
+          {% if top_k_bias_summary %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-topk" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-topk" class="js-table">
+              <thead>
+                <tr>
+                  <th>Platform</th><th>K</th><th>OA top-K</th><th>OA overall</th><th>OA delta</th><th>Citation Spearman</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in top_k_bias_summary %}
+                <tr>
+                  <td>{{ row.platform }}</td>
+                  <td>{{ row.k }}</td>
+                  <td>{{ "%.3f"|format(row.oa_top_k_share) if row.oa_top_k_share is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.oa_overall_share) if row.oa_overall_share is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.oa_delta_share) if row.oa_delta_share is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.citation_spearman) if row.citation_spearman is not none else "N/A" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No rows.</p>{% endif %}
+        </details>
+
+        <details>
+          <summary>CORE Ranking</summary>
+          {% if core_ranking_table %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-core-ranking" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-core-ranking" class="js-table">
+              <thead><tr><th>Platform</th><th>Eligible</th><th>A*</th><th>A</th><th>B</th><th>C</th><th>Missing</th></tr></thead>
+              <tbody>
+                {% for row in core_ranking_table %}
+                <tr>
+                  <td>{{ row.platform }}</td>
+                  <td>{{ row.eligible_count if row.eligible_count is not none else "N/A" }}</td>
+                  <td>{{ row.a_star_count if row.a_star_count is not none else "N/A" }}</td>
+                  <td>{{ row.a_count if row.a_count is not none else "N/A" }}</td>
+                  <td>{{ row.b_count if row.b_count is not none else "N/A" }}</td>
+                  <td>{{ row.c_count if row.c_count is not none else "N/A" }}</td>
+                  <td>{{ row.missing_count if row.missing_count is not none else "N/A" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No rows.</p>{% endif %}
+        </details>
+
+        <details>
+          <summary>CORE match source breakdown</summary>
+          {% if core_match_source_breakdown %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-core-match-source" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-core-match-source" class="js-table">
+              <thead><tr><th>Platform</th><th>Total</th><th>Matched</th><th>Matched %</th><th>ISSN</th><th>Title</th><th>Fuzzy</th><th>Unmatched</th></tr></thead>
+              <tbody>
+                {% for row in core_match_source_breakdown %}
+                <tr>
+                  <td>{{ row.platform }}</td>
+                  <td>{{ row.total }}</td>
+                  <td>{{ row.matched_count }}</td>
+                  <td>{{ "%.1f%%"|format(row.matched_pct) if row.matched_pct is not none else "N/A" }}</td>
+                  <td>{{ row.issn_count }}</td>
+                  <td>{{ row.title_count }}</td>
+                  <td>{{ row.fuzzy_count }}</td>
+                  <td>{{ row.unmatched_count }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No rows.</p>{% endif %}
+        </details>
+
+        <details>
+          <summary>Citations quality diagnostics</summary>
+          {% if citations_quality_rows %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-citations-quality" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-citations-quality" class="js-table">
+              <thead><tr><th>Platform</th><th>Total</th><th>Known %</th><th>OK</th><th>Missing</th><th>Suspicious</th></tr></thead>
+              <tbody>
+                {% for row in citations_quality_rows %}
+                <tr>
+                  <td>{{ row.platform }}</td>
+                  <td>{{ row.total }}</td>
+                  <td>{{ "%.1f%%"|format(row.known_pct) }}</td>
+                  <td>{{ row.ok_count }}</td>
+                  <td>{{ row.missing_count }}</td>
+                  <td>{{ row.suspicious_count }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No rows.</p>{% endif %}
+        </details>
+
+        <details>
+          <summary>Sample Records</summary>
+          {% if table %}
+          <div class="table-toolbar"><input class="table-filter" data-target="table-sample-records" placeholder="Filter rows..." /></div>
+          <div class="table-wrap">
+            <table id="table-sample-records" class="js-table">
+              <thead>
+                <tr>
+                  {% for key in table[0].keys() %}
+                  <th>{{ key }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in table %}
+                <tr>
+                  {% for value in row.values() %}
+                  <td>{{ value }}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}<p>No sample rows.</p>{% endif %}
+        </details>
+      </section>
+
+      <section id="raw-json" class="card">
+        <h2>Raw JSON</h2>
+        <details>
+          <summary>Metrics JSON</summary>
+          <pre>{{ latest_metrics | tojson(indent=2) }}</pre>
+        </details>
+        <details>
+          <summary>Diagnostics JSON</summary>
+          <pre>{{ diagnostics | tojson(indent=2) }}</pre>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  {% if interactive.plotly_js %}
+  <script>{{ interactive.plotly_js | safe }}</script>
+  {% elif interactive.plotly_cdn_url %}
+  <script src="{{ interactive.plotly_cdn_url }}"></script>
+  {% endif %}
+  <script id="interactive-report-data" type="application/json">{{ interactive.payload | tojson }}</script>
+  <script>
+    (function () {
+      const payloadNode = document.getElementById("interactive-report-data");
+      if (!payloadNode) return;
+      const data = JSON.parse(payloadNode.textContent || "{}");
+      window.__REPORT_DATA__ = data;
+      const hasPlotly = typeof window.Plotly !== "undefined";
+
+      const platformFilter = document.getElementById("platform-filter");
+      const metricFilter = document.getElementById("metric-group-filter");
+      const topKFilter = document.getElementById("top-k-filter");
+      const compareMode = document.getElementById("compare-mode-filter");
+      const hideLow = document.getElementById("hide-low-reliability");
+      const showMissing = document.getElementById("show-missingness-overlay");
+      const geoVariantFilter = document.getElementById("geo-variant-filter");
+      const geoGranularityFilter = document.getElementById("geo-granularity-filter");
+
+      function selectedPlatform() { return (platformFilter && platformFilter.value) || "all"; }
+      function selectedK() { return String(parseInt((topKFilter && topKFilter.value) || "10", 10)); }
+      function currentPlatformData() {
+        const platform = selectedPlatform();
+        return (data.platform_data && (data.platform_data[platform] || data.platform_data.all)) || {};
+      }
+
+      function setPlaceholder(id, message) {
+        const node = document.getElementById(id);
+        if (node) node.textContent = message || "";
+      }
+
+      function chartOrPlaceholder(target, placeholder, traces, layout, reason) {
+        const node = document.getElementById(target);
+        if (!node) return;
+        if (!hasPlotly || reason) {
+          node.innerHTML = "";
+          setPlaceholder(placeholder, reason || "Plotly unavailable.");
+          return;
+        }
+        setPlaceholder(placeholder, "");
+        window.Plotly.newPlot(target, traces, layout, { responsive: true, displayModeBar: true });
+      }
+
+      function formatShare(value) {
+        if (value == null || Number.isNaN(Number(value))) return "-";
+        return `${(Number(value) * 100).toFixed(1)}%`;
+      }
+
+      function reliabilityHidden(value) {
+        return hideLow && hideLow.checked && value === "low";
+      }
+
+      function renderRecency() {
+        const mode = (compareMode && compareMode.value) || "overlay";
+        const selected = selectedPlatform();
+        const recency = data.recency_overlay || {};
+        const platforms = selected === "all" ? (data.platforms || []).filter((p) => p !== "all") : [selected];
+        const traces = [];
+        platforms.forEach((platform) => {
+          const points = recency[platform] || [];
+          if (!points.length) return;
+          traces.push({
+            type: "scatter",
+            mode: "lines+markers",
+            name: platform,
+            x: points.map((p) => p.year),
+            y: points.map((p) => p.count),
+            visible: true,
+          });
+        });
+        if (!traces.length) {
+          chartOrPlaceholder("chart-recency", "placeholder-recency", [], {}, "Recency distribution unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-recency",
+          "placeholder-recency",
+          traces,
+          {
+            title: mode === "small_multiples" ? "Recency (small multiples mode shown as overlays in legend)" : undefined,
+            margin: { t: 20, r: 20, b: 55, l: 45 },
+            xaxis: { title: "Year" },
+            yaxis: { title: "Count" },
+          },
+          null
+        );
+      }
+
+      function renderRankCitations() {
+        const platformData = currentPlatformData();
+        const block = platformData.rank_vs_citations || {};
+        if (reliabilityHidden(block.reliability)) {
+          chartOrPlaceholder("chart-rank-citations", "placeholder-rank-citations", [], {}, "Hidden due to low reliability.");
+          return;
+        }
+        const points = Array.isArray(block.points) ? block.points : [];
+        if (!points.length) {
+          chartOrPlaceholder("chart-rank-citations", "placeholder-rank-citations", [], {}, block.note || block.reason || "No citation points.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-rank-citations",
+          "placeholder-rank-citations",
+          [{
+            type: "scatter",
+            mode: "markers",
+            x: points.map((p) => p.rank),
+            y: points.map((p) => p.citations),
+            text: points.map((p) => `${p.title || "untitled"}<br>${p.doi || "-"}<br>year=${p.year || "-"}`),
+            hovertemplate: "%{text}<br>rank=%{x}<br>citations=%{y}<extra></extra>",
+            marker: { size: 8, color: "#bf4f34", opacity: 0.75 },
+          }],
+          { margin: { t: 20, r: 20, b: 55, l: 50 }, xaxis: { title: "Rank", autorange: "reversed" }, yaxis: { title: "Citations" } },
+          null
+        );
+      }
+
+      function renderOATopK() {
+        const k = selectedK();
+        const block = ((currentPlatformData().oa_top_k || {})[k]) || {};
+        if (reliabilityHidden(block.reliability)) {
+          chartOrPlaceholder("chart-oa-topk", "placeholder-oa-topk", [], {}, "Hidden due to low reliability.");
+          return;
+        }
+        if (block.top_k_share == null || block.overall_share == null) {
+          chartOrPlaceholder("chart-oa-topk", "placeholder-oa-topk", [], {}, "OA Top-K not available.");
+          return;
+        }
+        const annotation = showMissing && showMissing.checked && block.missing_pct != null
+          ? [{ text: `missing=${(block.missing_pct * 100).toFixed(1)}%`, x: 0.5, y: 1.08, showarrow: false, xref: "paper", yref: "paper", font: { size: 11, color: "#666" } }]
+          : [];
+        chartOrPlaceholder(
+          "chart-oa-topk",
+          "placeholder-oa-topk",
+          [{ type: "bar", x: ["overall", `top-${k}`], y: [block.overall_share, block.top_k_share], marker: { color: ["#1f7a8c", "#bf4f34"] } }],
+          { margin: { t: 30, r: 20, b: 55, l: 45 }, yaxis: { title: "OA share", range: [0, 1] }, annotations: annotation },
+          null
+        );
+      }
+
+      function renderDocType() {
+        const k = selectedK();
+        const block = ((currentPlatformData().doc_type_top_k || {})[k]) || {};
+        if (reliabilityHidden(block.reliability)) {
+          chartOrPlaceholder("chart-doc-type", "placeholder-doc-type", [], {}, "Hidden due to low reliability.");
+          return;
+        }
+        const top = block.top_distribution || {};
+        const overall = block.overall_distribution || {};
+        const labels = Array.from(new Set([].concat(Object.keys(top), Object.keys(overall)))).slice(0, 10);
+        if (!labels.length) {
+          chartOrPlaceholder("chart-doc-type", "placeholder-doc-type", [], {}, "Doc type distribution unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-doc-type",
+          "placeholder-doc-type",
+          [
+            { type: "bar", name: "overall", x: labels, y: labels.map((l) => overall[l] || 0), marker: { color: "#3d5a80" } },
+            { type: "bar", name: `top-${k}`, x: labels, y: labels.map((l) => top[l] || 0), marker: { color: "#ee6c4d" } },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 85, l: 45 }, yaxis: { title: "Share", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderHHI() {
+        const selected = selectedPlatform();
+        const rows = Array.isArray(data.publisher_hhi) ? data.publisher_hhi : [];
+        const visible = selected === "all" ? rows : rows.filter((r) => r.platform === selected);
+        const available = visible.filter((r) => r.hhi != null);
+        if (!available.length) {
+          chartOrPlaceholder("chart-hhi", "placeholder-hhi", [], {}, (visible.find((r) => r.reason) || {}).reason || "HHI unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-hhi",
+          "placeholder-hhi",
+          [{ type: "bar", x: available.map((r) => r.platform), y: available.map((r) => r.hhi), marker: { color: "#6c757d" } }],
+          { margin: { t: 20, r: 20, b: 55, l: 45 }, yaxis: { title: "HHI", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderOARecency() {
+        const selected = selectedPlatform();
+        const payload = data.oa_vs_recency || {};
+        const platforms = selected === "all" ? (data.platforms || []).filter((p) => p !== "all") : [selected];
+        const traces = [];
+        platforms.forEach((platform) => {
+          const points = payload[platform] || [];
+          if (!points.length) return;
+          traces.push({
+            type: "scatter",
+            mode: "markers+lines",
+            name: platform,
+            x: points.map((p) => p.year),
+            y: points.map((p) => p.oa_share),
+            marker: { size: points.map((p) => Math.max(7, Math.min(24, p.count + 4))), opacity: 0.7 },
+          });
+        });
+        if (!traces.length) {
+          chartOrPlaceholder("chart-oa-recency", "placeholder-oa-recency", [], {}, "OA vs recency unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-oa-recency",
+          "placeholder-oa-recency",
+          traces,
+          { margin: { t: 20, r: 20, b: 55, l: 45 }, xaxis: { title: "Year" }, yaxis: { title: "OA share", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderPlatformCompare() {
+        const rows = Array.isArray(data.platform_compare) ? data.platform_compare : [];
+        if (!rows.length) {
+          chartOrPlaceholder("chart-platform-compare", "placeholder-platform-compare", [], {}, "Platform compare unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-platform-compare",
+          "placeholder-platform-compare",
+          [
+            { type: "bar", name: "Median year", x: rows.map((r) => r.platform), y: rows.map((r) => r.median_year) },
+            { type: "bar", name: "OA share", x: rows.map((r) => r.platform), y: rows.map((r) => r.oa_share), yaxis: "y2" },
+            { type: "bar", name: "Publisher HHI", x: rows.map((r) => r.platform), y: rows.map((r) => r.publisher_hhi), yaxis: "y2" },
+          ],
+          {
+            barmode: "group",
+            margin: { t: 20, r: 40, b: 55, l: 45 },
+            yaxis: { title: "Median year" },
+            yaxis2: { title: "Share / HHI", overlaying: "y", side: "right", range: [0, 1] },
+          },
+          null
+        );
+      }
+
+      function renderMissingness() {
+        const missing = data.missingness || {};
+        const z = Array.isArray(missing.z) ? missing.z : [];
+        if (!z.length) {
+          chartOrPlaceholder("chart-missingness", "placeholder-missingness", [], {}, "Missingness heatmap unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-missingness",
+          "placeholder-missingness",
+          [{ type: "heatmap", x: missing.fields || [], y: missing.platforms || [], z, colorscale: "Reds", zmin: 0, zmax: 1, hovertemplate: "platform=%{y}<br>field=%{x}<br>missing=%{z:.2f}<extra></extra>" }],
+          { margin: { t: 20, r: 20, b: 60, l: 110 } },
+          null
+        );
+      }
+
+      function renderEnrichmentGain() {
+        const selected = selectedPlatform();
+        const block = data.enrichment_gain || {};
+        const fields = block.fields || [];
+        if (!fields.length) {
+          chartOrPlaceholder("chart-enrichment-gain", "placeholder-enrichment-gain", [], {}, "Enrichment gain unavailable.");
+          return;
+        }
+        const source = selected === "all"
+          ? block.overall || {}
+          : ((block.per_platform || {})[selected] || {});
+        const before = source.before || {};
+        const after = source.after || {};
+        chartOrPlaceholder(
+          "chart-enrichment-gain",
+          "placeholder-enrichment-gain",
+          [
+            { type: "bar", name: "before", x: fields, y: fields.map((f) => before[f]), marker: { color: "#9aa5b1" } },
+            { type: "bar", name: "after", x: fields, y: fields.map((f) => after[f]), marker: { color: "#1f7a8c" } },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 90, l: 45 }, yaxis: { title: "Coverage", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderOverlap() {
+        const overlap = data.overlap || {};
+        const z = overlap.z || [];
+        if (!Array.isArray(z) || !z.length) {
+          chartOrPlaceholder("chart-overlap", "placeholder-overlap", [], {}, "Overlap matrix unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-overlap",
+          "placeholder-overlap",
+          [{ type: "heatmap", x: overlap.platforms || [], y: overlap.platforms || [], z, colorscale: "Blues", zmin: 0, zmax: 1, hovertemplate: "%{y} vs %{x}<br>Jaccard=%{z:.3f}<extra></extra>" }],
+          { margin: { t: 20, r: 20, b: 55, l: 110 } },
+          null
+        );
+      }
+
+      function renderCoreRankBias() {
+        const selected = selectedPlatform();
+        const k = selectedK();
+        const payload = data.core_rank_topk_vs_rest || {};
+        const rows = selected === "all" ? (data.platforms || []).filter((p) => p !== "all") : [selected];
+        const points = rows.map((platform) => ({ platform, item: (payload[platform] || {})[k] || {} }));
+        if (!points.some((p) => p.item.top_k_share != null || p.item.rest_share != null)) {
+          chartOrPlaceholder("chart-core-rank-bias", "placeholder-core-rank-bias", [], {}, "CORE rank bias unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-core-rank-bias",
+          "placeholder-core-rank-bias",
+          [
+            { type: "bar", name: `top-${k}`, x: points.map((p) => p.platform), y: points.map((p) => p.item.top_k_share) },
+            { type: "bar", name: "rest", x: points.map((p) => p.platform), y: points.map((p) => p.item.rest_share) },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 55, l: 45 }, yaxis: { title: "Share", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderJIFQuartileBias() {
+        const selected = selectedPlatform();
+        const k = selectedK();
+        const payload = data.jif_quartile_topk_vs_rest || {};
+        const rows = selected === "all" ? (data.platforms || []).filter((p) => p !== "all") : [selected];
+        const topShares = [];
+        const restShares = [];
+        rows.forEach((platform) => {
+          const item = (((payload[platform] || {})[k]) || {});
+          const top = (item.top || {});
+          const rest = (item.rest || {});
+          topShares.push(top.Q1 || 0);
+          restShares.push(rest.Q1 || 0);
+        });
+        if (!topShares.some((v) => v > 0) && !restShares.some((v) => v > 0)) {
+          chartOrPlaceholder("chart-jif-quartile-bias", "placeholder-jif-quartile-bias", [], {}, "JIF quartile bias unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-jif-quartile-bias",
+          "placeholder-jif-quartile-bias",
+          [
+            { type: "bar", name: `top-${k} Q1`, x: rows, y: topShares },
+            { type: "bar", name: "rest Q1", x: rows, y: restShares },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 55, l: 45 }, yaxis: { title: "Q1 share", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderGeoBias() {
+        const block = currentPlatformData().geo_bias || {};
+        const enabled = !!block.enabled_for_bias_metrics;
+        const reason = block.reason || "";
+        const availableShare = document.getElementById("geo-available-share");
+        const multiShare = document.getElementById("geo-multi-share");
+        const enabledNode = document.getElementById("geo-enabled");
+        const reasonNode = document.getElementById("geo-reason");
+        if (availableShare) availableShare.textContent = formatShare(block.available_share);
+        if (multiShare) multiShare.textContent = formatShare(block.multi_country_share ?? block.multi_share);
+        if (enabledNode) enabledNode.textContent = enabled ? "enabled" : "disabled";
+        if (reasonNode) reasonNode.textContent = reason || "-";
+
+        const k = selectedK();
+        const variant = (geoVariantFilter && geoVariantFilter.value) || "fractional";
+        const granularity = (geoGranularityFilter && geoGranularityFilter.value) || "countries";
+        const overallVariants = block.overall_distribution_variants || {};
+        const overallDistribution = (((overallVariants[granularity] || {})[variant]) || {});
+        const perK = ((block.per_k || {})[k]) || {};
+        const variantPayload = ((((perK.variants || {})[granularity] || {})[variant]) || {});
+        const topDistribution = variantPayload.top_distribution || {};
+        const overRatio = variantPayload.overrepresentation_ratio || {};
+
+        if (!enabled) {
+          chartOrPlaceholder("chart-geo-top", "placeholder-geo-top", [], {}, reason || "Geo bias disabled by gating.");
+          chartOrPlaceholder("chart-geo-overunder", "placeholder-geo-overunder", [], {}, reason || "Geo bias disabled by gating.");
+          return;
+        }
+
+        const labels = Array.from(
+          new Set(
+            Object.keys(overallDistribution || {})
+              .concat(Object.keys(topDistribution || {}))
+          )
+        )
+          .map((label) => ({
+            label,
+            score: Math.max(Number(overallDistribution[label] || 0), Number(topDistribution[label] || 0)),
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10)
+          .map((item) => item.label);
+        if (!labels.length) {
+          chartOrPlaceholder("chart-geo-top", "placeholder-geo-top", [], {}, "Geo distribution unavailable.");
+          chartOrPlaceholder("chart-geo-overunder", "placeholder-geo-overunder", [], {}, "Geo over/under unavailable.");
+          return;
+        }
+
+        chartOrPlaceholder(
+          "chart-geo-top",
+          "placeholder-geo-top",
+          [
+            { type: "bar", name: "overall", x: labels, y: labels.map((l) => overallDistribution[l] || 0), marker: { color: "#3d5a80" } },
+            { type: "bar", name: `top-${k}`, x: labels, y: labels.map((l) => topDistribution[l] || 0), marker: { color: "#ee6c4d" } },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 85, l: 45 }, yaxis: { title: "Share", range: [0, 1] } },
+          null
+        );
+
+        const ratioEntries = Object.entries(overRatio || {})
+          .filter(([, value]) => Number.isFinite(Number(value)));
+        const overEntries = ratioEntries
+          .filter(([, value]) => Number(value) >= 1)
+          .sort((a, b) => Number(b[1]) - Number(a[1]))
+          .slice(0, 10);
+        const underEntries = ratioEntries
+          .filter(([, value]) => Number(value) < 1)
+          .sort((a, b) => Number(a[1]) - Number(b[1]))
+          .slice(0, 10);
+        const ratioLabels = overEntries.concat(underEntries).map(([label]) => label);
+        if (!ratioLabels.length) {
+          chartOrPlaceholder("chart-geo-overunder", "placeholder-geo-overunder", [], {}, "Over/under ratio unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-geo-overunder",
+          "placeholder-geo-overunder",
+          [
+            {
+              type: "bar",
+              x: ratioLabels,
+              y: ratioLabels.map((l) => overRatio[l]),
+              marker: {
+                color: ratioLabels.map((l) => (Number(overRatio[l]) >= 1 ? "#1f7a8c" : "#bf4f34")),
+              },
+            },
+          ],
+          { margin: { t: 20, r: 20, b: 85, l: 45 }, yaxis: { title: "Overrepresentation ratio" } },
+          null
+        );
+      }
+
+      function renderVenueDiversity() {
+        const selected = selectedPlatform();
+        const k = selectedK();
+        const payload = data.venue_diversity || {};
+        const rows = selected === "all" ? (data.platforms || []).filter((p) => p !== "all") : [selected];
+        const values = rows.map((platform) => {
+          const perK = (((payload[platform] || {}).per_k || {})[k]) || {};
+          return perK.top_k_diversity || 0;
+        });
+        if (!values.length) {
+          chartOrPlaceholder("chart-venue-diversity", "placeholder-venue-diversity", [], {}, "Venue diversity unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-venue-diversity",
+          "placeholder-venue-diversity",
+          [{ type: "bar", x: rows, y: values, marker: { color: "#1f7a8c" } }],
+          { margin: { t: 20, r: 20, b: 55, l: 45 }, yaxis: { title: "Unique journals / top-k", range: [0, 1] } },
+          null
+        );
+      }
+
+      function applyMetricGroupVisibility() {
+        const selected = (metricFilter && metricFilter.value) || "all";
+        document.querySelectorAll(".chart-card[data-group]").forEach((node) => {
+          const group = node.getAttribute("data-group");
+          node.style.display = selected === "all" || selected === group ? "block" : "none";
+        });
+      }
+
+      function renderAll() {
+        applyMetricGroupVisibility();
+        renderRecency();
+        renderRankCitations();
+        renderOATopK();
+        renderDocType();
+        renderHHI();
+        renderOARecency();
+        renderPlatformCompare();
+        renderMissingness();
+        renderEnrichmentGain();
+        renderOverlap();
+        renderCoreRankBias();
+        renderJIFQuartileBias();
+        renderGeoBias();
+        renderVenueDiversity();
+      }
+
+      [platformFilter, metricFilter, topKFilter, compareMode, hideLow, showMissing, geoVariantFilter, geoGranularityFilter].forEach((node) => {
+        if (node) node.addEventListener("change", renderAll);
+      });
+      renderAll();
+
+      function filterTable(tableId, query) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const q = (query || "").trim().toLowerCase();
+        const rows = table.querySelectorAll("tbody tr");
+        rows.forEach((row) => {
+          const text = row.textContent.toLowerCase();
+          row.style.display = !q || text.includes(q) ? "" : "none";
+        });
+      }
+
+      document.querySelectorAll(".table-filter").forEach((input) => {
+        const target = input.getAttribute("data-target");
+        input.addEventListener("input", () => filterTable(target, input.value));
+      });
+
+      function sortTableByColumn(table, columnIndex, asc) {
+        const dir = asc ? 1 : -1;
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        rows.sort((a, b) => {
+          const aText = (a.children[columnIndex] || {}).textContent || "";
+          const bText = (b.children[columnIndex] || {}).textContent || "";
+          const aNum = Number(aText.replace(/[^0-9.+-]/g, ""));
+          const bNum = Number(bText.replace(/[^0-9.+-]/g, ""));
+          if (!Number.isNaN(aNum) && !Number.isNaN(bNum) && aText.trim() && bText.trim()) {
+            return (aNum - bNum) * dir;
+          }
+          return aText.localeCompare(bText) * dir;
+        });
+        rows.forEach((row) => tbody.appendChild(row));
+      }
+
+      document.querySelectorAll("table.js-table th").forEach((th) => {
+        th.addEventListener("click", () => {
+          const table = th.closest("table");
+          if (!table) return;
+          const index = Array.from(th.parentElement.children).indexOf(th);
+          const asc = !th.classList.contains("sort-asc");
+          table.querySelectorAll("th").forEach((node) => node.classList.remove("sort-asc", "sort-desc"));
+          th.classList.add(asc ? "sort-asc" : "sort-desc");
+          sortTableByColumn(table, index, asc);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

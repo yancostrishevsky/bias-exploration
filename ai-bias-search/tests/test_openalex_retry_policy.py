@@ -20,7 +20,13 @@ class FakeOpenAlexClient:
         self.handler = handler
         self.calls = []
 
-    def get(self, path: str, *, params: Dict[str, Any] | None = None) -> httpx.Response:
+    def get(
+        self,
+        path: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        headers: Dict[str, Any] | None = None,
+    ) -> httpx.Response:
         params = params or {}
         self.calls.append((path, dict(params)))
         return self.handler(path, params)
@@ -33,10 +39,8 @@ def _response(status_code: int, path: str, *, json_body: Any = None) -> httpx.Re
     return httpx.Response(status_code, request=request, json=json_body)
 
 
-def test_direct_doi_404_is_not_retried() -> None:
+def test_doi_filter_empty_result_is_not_retried() -> None:
     def handler(path: str, params: Dict[str, Any]) -> httpx.Response:
-        if path.startswith("/works/doi:"):
-            return _response(404, path, json_body={"error": "not found"})
         if path == "/works":
             return _response(200, path, json_body={"results": []})
         return _response(500, path, json_body={"error": "unexpected"})
@@ -56,8 +60,8 @@ def test_direct_doi_404_is_not_retried() -> None:
     )
 
     assert resolved is None
-    doi_calls = [path for path, _ in client.calls if path.startswith("/works/doi:")]
-    assert len(doi_calls) == 1
+    filter_calls = [params.get("filter") for path, params in client.calls if path == "/works"]
+    assert filter_calls == ["doi:10.1234/example"]
 
 
 @pytest.mark.parametrize("status", [429, 503])
@@ -65,11 +69,15 @@ def test_retryable_statuses_are_retried(status: int) -> None:
     attempts = {"count": 0}
 
     def handler(path: str, params: Dict[str, Any]) -> httpx.Response:
-        if path.startswith("/works/doi:"):
+        if path == "/works" and params.get("filter") == "doi:10.1234/example":
             attempts["count"] += 1
             if attempts["count"] < 3:
                 return _response(status, path, json_body={"error": "retry me"})
-            return _response(200, path, json_body={"id": "https://openalex.org/W123"})
+            return _response(
+                200,
+                path,
+                json_body={"results": [{"id": "https://openalex.org/W123"}]},
+            )
         return _response(500, path, json_body={"error": "unexpected"})
 
     client = FakeOpenAlexClient(handler)
@@ -87,5 +95,9 @@ def test_retryable_statuses_are_retried(status: int) -> None:
     )
 
     assert resolved == "W123"
-    doi_calls = [path for path, _ in client.calls if path.startswith("/works/doi:")]
-    assert len(doi_calls) == 3
+    filter_calls = [
+        params.get("filter")
+        for path, params in client.calls
+        if path == "/works" and params.get("filter") == "doi:10.1234/example"
+    ]
+    assert len(filter_calls) == 3

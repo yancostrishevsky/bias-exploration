@@ -2,6 +2,7 @@
 
 import itertools
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,12 @@ from dotenv import load_dotenv
 
 from ai_bias_search.connectors import get_connector
 from ai_bias_search.connectors.base import ConnectorError
+from ai_bias_search.diagnostics.capture import (
+    configure_request_capture,
+    load_request_capture_file,
+    persist_request_capture,
+    reset_request_capture,
+)
 from ai_bias_search.diagnostics.sanity import run_sanity_checks
 from ai_bias_search.enrichment.scopus_rankings import enrich_with_scopus_rankings
 from ai_bias_search.evaluation.biases import compute_bias_metrics
@@ -54,6 +61,13 @@ def _load_env() -> None:
     configure_logging()
 
 
+def _ensure_mpl_config_dir() -> None:
+    if os.getenv("MPLCONFIGDIR"):
+        return
+    if os.access("/tmp", os.W_OK):
+        os.environ["MPLCONFIGDIR"] = "/tmp"
+
+
 def _load_app_config(config_path: Path) -> AppConfig:
     config = load_config(config_path)
     return config
@@ -89,6 +103,8 @@ def _json_compatible(value: Any) -> Any:
         return None
     if isinstance(value, dict):
         return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, np.ndarray):
+        return [_json_compatible(item) for item in value.tolist()]
     if isinstance(value, list):
         return [_json_compatible(item) for item in value]
     if isinstance(value, tuple):
@@ -116,13 +132,23 @@ def _merge_canonical_metadata(
     updated["citations"] = citations
     updated["cited_by_count"] = citations
 
-    issn_values = canonical.get("issn")
+    issn_values = canonical.get("issn_list")
     if isinstance(issn_values, list):
         updated["issn_list"] = issn_values or None
-        if issn_values and not updated.get("issn"):
-            updated["issn"] = issn_values[0]
-        if len(issn_values) > 1 and not updated.get("eissn"):
-            updated["eissn"] = issn_values[1]
+    canonical_issn = canonical.get("issn")
+    if canonical_issn is not None and (
+        updated.get("issn") is None or (isinstance(updated.get("issn"), str) and not str(updated.get("issn")).strip())
+    ):
+        updated["issn"] = canonical_issn
+    canonical_eissn = canonical.get("eissn")
+    if canonical_eissn is not None and (
+        updated.get("eissn") is None or (isinstance(updated.get("eissn"), str) and not str(updated.get("eissn")).strip())
+    ):
+        updated["eissn"] = canonical_eissn
+    for key in ("issn_source", "issn_provenance", "year_raw", "year_enriched", "year_provenance"):
+        value = canonical.get(key)
+        if value is not None:
+            updated[key] = value
 
     for key in ("publisher", "journal_title", "doc_type", "language"):
         value = canonical.get(key)
@@ -131,6 +157,28 @@ def _merge_canonical_metadata(
             continue
         if current is None or (isinstance(current, str) and not current.strip()):
             updated[key] = value
+
+    canonical_countries = canonical.get("countries")
+    if not isinstance(canonical_countries, list):
+        canonical_countries = canonical.get("affiliation_countries")
+    if isinstance(canonical_countries, list):
+        updated["countries"] = canonical_countries or None
+        updated["affiliation_countries"] = canonical_countries or None
+    primary = canonical.get("country_primary")
+    if primary is None:
+        primary = canonical.get("country_dominant")
+    if primary is not None:
+        updated["country_primary"] = primary
+        updated["country_dominant"] = primary
+    for key in ("country_count", "country_provenance"):
+        value = canonical.get(key)
+        if value is not None:
+            updated[key] = value
+    if "country_is_fractional" in canonical:
+        updated["country_is_fractional"] = bool(canonical.get("country_is_fractional"))
+
+    if canonical.get("year") is not None:
+        updated["year"] = canonical.get("year")
 
     if canonical.get("is_oa") is not None and updated.get("is_oa") is None:
         updated["is_oa"] = canonical["is_oa"]
@@ -149,6 +197,15 @@ def collect(
 
     _load_env()
     app_config = _load_app_config(config)
+    capture_requests = bool(
+        app_config.diagnostics.enabled and app_config.diagnostics.capture_requests
+    )
+    configure_request_capture(
+        enabled=capture_requests,
+        max_logs=app_config.diagnostics.max_request_logs,
+        redact_fields=app_config.diagnostics.redact_fields,
+    )
+    reset_request_capture()
     base_dir = config.parent
     queries_path = app_config.resolve_queries_path(base_dir)
     queries = load_queries(queries_path)
@@ -178,6 +235,8 @@ def collect(
         output_path = Path("data/raw") / platform / f"{timestamp}.jsonl"
         write_jsonl(output_path, results)
         LOGGER.info("Saved %s records for %s to %s", len(results), platform, output_path)
+    if capture_requests:
+        persist_request_capture(Path("results/request_logs.json"), merge_existing=True)
 
 
 @app.command()
@@ -191,6 +250,15 @@ def enrich(
 
     _load_env()
     app_config = _load_app_config(config)
+    capture_requests = bool(
+        app_config.diagnostics.enabled and app_config.diagnostics.capture_requests
+    )
+    configure_request_capture(
+        enabled=capture_requests,
+        max_logs=app_config.diagnostics.max_request_logs,
+        redact_fields=app_config.diagnostics.redact_fields,
+    )
+    reset_request_capture()
     records: List[dict] = []
     for platform in app_config.platforms:
         raw_dir = Path("data/raw") / platform
@@ -244,6 +312,8 @@ def enrich(
     output_path = Path("data/enriched") / f"{timestamp}.parquet"
     write_parquet(output_path, enriched)
     LOGGER.info("Enriched dataset stored at %s", output_path)
+    if capture_requests:
+        persist_request_capture(Path("results/request_logs.json"), merge_existing=True)
 
 
 def _pairwise_metrics(frame: pd.DataFrame, platforms: List[str]) -> Dict[str, Dict[str, float]]:
@@ -274,7 +344,7 @@ def eval(
     """Compute evaluation metrics and store them as JSON."""
 
     _load_env()
-    _ = _load_app_config(config)
+    app_config = _load_app_config(config)
     enriched_dir = Path("data/enriched")
     enriched_path: Path | None
     enriched_path = (
@@ -287,7 +357,16 @@ def eval(
         raise typer.Exit(code=1)
 
     frame = read_parquet(enriched_path)
-    diagnostics = run_sanity_checks(frame.to_dict(orient="records"))
+    request_logs = (
+        load_request_capture_file(Path("results/request_logs.json"))
+        if app_config.diagnostics.capture_requests
+        else {}
+    )
+    diagnostics = run_sanity_checks(
+        frame.to_dict(orient="records"),
+        diagnostics=app_config.diagnostics,
+        request_logs=request_logs,
+    )
     diagnostics_path = Path("results/diagnostics.json")
     ensure_directory(diagnostics_path)
     diagnostics_path.write_text(
@@ -302,7 +381,15 @@ def eval(
     )
 
     pairwise = _pairwise_metrics(frame, platforms) if platforms else {}
-    bias_metrics = compute_bias_metrics(frame)
+    try:
+        bias_metrics = compute_bias_metrics(
+            frame,
+            geo_min_coverage=app_config.geo.top_k_country_min_coverage,
+        )
+    except TypeError as exc:
+        if "geo_min_coverage" not in str(exc):
+            raise
+        bias_metrics = compute_bias_metrics(frame)
 
     timestamp = utc_timestamp()
     output_path = Path("results/metrics") / f"{timestamp}.json"
@@ -327,6 +414,7 @@ def report(
     """Generate an HTML report for the latest metrics."""
 
     _load_env()
+    _ensure_mpl_config_dir()
     _ = _load_app_config(config)
 
     metrics_dir = Path("results/metrics")

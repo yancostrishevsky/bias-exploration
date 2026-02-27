@@ -1,0 +1,36 @@
+{
+  "search-results": {
+    "opensearch:totalResults": "3",
+    "entry": [
+      {
+        "dc:identifier": "SCOPUS_ID:85012345678",
+        "eid": "2-s2.0-85012345678",
+        "prism:doi": "10.1234/EXAMPLE.ONE",
+        "dc:title": "First Scopus Paper",
+        "dc:creator": "Doe, Jane",
+        "prism:publicationName": "Journal of Testing",
+        "prism:issn": "12345678",
+        "prism:eIssn": "87654321",
+        "prism:coverDate": "2021-01-15",
+        "citedby-count": "17",
+        "openaccessFlag": "1",
+        "source-id": "12345",
+        "prism:url": "https://www.scopus.com/record/display.uri?eid=2-s2.0-85012345678"
+      },
+      {
+        "dc:identifier": "SCOPUS_ID:85012345679",
+        "eid": "2-s2.0-85012345679",
+        "prism:doi": "10.1234/example.two",
+        "dc:title": "Second Scopus Paper",
+        "dc:creator": "Roe, John",
+        "prism:publicationName": "Journal of Testing",
+        "prism:issn": "12345678",
+        "prism:eIssn": "87654321",
+        "prism:coverDate": "2020-11-01",
+        "citedby-count": "5",
+        "openaccessFlag": "0",
+        "source-id": "12345"
+      }
+    ]
+  }
+}

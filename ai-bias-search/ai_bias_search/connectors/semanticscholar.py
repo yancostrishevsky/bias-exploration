@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from ai_bias_search.diagnostics.capture import capture_request
 from ai_bias_search.rankings.base import normalize_issn
 from ai_bias_search.utils.config import RetryConfig
 from ai_bias_search.utils.ids import normalise_doi
@@ -64,10 +65,33 @@ def _extract_issn_values(paper: dict[str, Any]) -> list[str]:
     journal = _coerce_mapping(paper.get("journal"))
     publication_venue = _coerce_mapping(paper.get("publicationVenue"))
     external_ids = _coerce_mapping(paper.get("externalIds"))
-    add(journal.get("issn"))
     add(publication_venue.get("issn"))
+    add(journal.get("issn"))
     add(external_ids.get("ISSN"))
     return out
+
+
+def _clean_publisher(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text in {"0", "0.0"}:
+        return None
+    return text
+
+
+def _extract_publisher(paper: dict[str, Any]) -> str | None:
+    venue_obj = _coerce_mapping(paper.get("venue"))
+    journal = _coerce_mapping(paper.get("journal"))
+    publication_venue = _coerce_mapping(paper.get("publicationVenue"))
+    return (
+        _clean_publisher(venue_obj.get("publisher"))
+        or _clean_publisher(journal.get("publisher"))
+        or _clean_publisher(publication_venue.get("publisher"))
+        or _clean_publisher(paper.get("publisher"))
+    )
 
 
 class SemanticScholarConnector:
@@ -157,13 +181,12 @@ class SemanticScholarConnector:
             doi = normalise_doi(external_ids.get("DOI")) if isinstance(external_ids, dict) else None
             journal = _coerce_mapping(paper.get("journal"))
             publication_venue = _coerce_mapping(paper.get("publicationVenue"))
-            publisher = (
-                journal.get("publisher")
-                or publication_venue.get("publisher")
-                or paper.get("publisher")
+            venue_obj = _coerce_mapping(paper.get("venue"))
+            publisher = _extract_publisher(paper)
+            venue_name = (
+                venue_obj.get("name") if isinstance(venue_obj.get("name"), str) else paper.get("venue")
             )
-            publisher = publisher.strip() if isinstance(publisher, str) and publisher.strip() else None
-            journal_title = journal.get("name") or paper.get("venue")
+            journal_title = publication_venue.get("name") or journal.get("name") or venue_name
             journal_title = (
                 journal_title.strip()
                 if isinstance(journal_title, str) and journal_title.strip()
@@ -244,16 +267,34 @@ class SemanticScholarConnector:
 
     def _get(self, url: str, params: Dict[str, Any], headers: Dict[str, Any]) -> Dict[str, Any]:
         def execute() -> Dict[str, Any]:
-            resp = self.client.get(url, params=params, headers=headers)
-            if resp.status_code == 429:
-                ra = resp.headers.get("Retry-After")
-                if ra:
-                    try:
-                        time.sleep(int(ra))
-                    except (ValueError, TypeError):
-                        pass
-            resp.raise_for_status()
-            return resp.json()
+            response: httpx.Response | None = None
+            payload: Dict[str, Any] | None = None
+            started = time.perf_counter()
+            try:
+                response = self.client.get(url, params=params, headers=headers)
+                if response.status_code == 429:
+                    ra = response.headers.get("Retry-After")
+                    if ra:
+                        try:
+                            time.sleep(int(ra))
+                        except (ValueError, TypeError):
+                            pass
+                response.raise_for_status()
+                payload = response.json()
+                return payload
+            finally:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                capture_request(
+                    platform=self.name,
+                    stage="collect",
+                    endpoint=url,
+                    method="GET",
+                    params=params,
+                    headers=headers,
+                    status_code=(response.status_code if response is not None else None),
+                    duration_ms=duration_ms,
+                    response_payload=payload,
+                )
 
         return self.retrying(execute)
 

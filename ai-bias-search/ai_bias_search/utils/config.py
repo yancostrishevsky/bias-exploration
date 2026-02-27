@@ -122,6 +122,26 @@ class ScopusEnrichConfig(BaseModel):
     rankings: ScopusRankingConfig = Field(default_factory=ScopusRankingConfig)
 
 
+class DiagnosticsConfig(BaseModel):
+    """Configuration for diagnostics capture and redaction."""
+
+    enabled: bool = True
+    capture_samples: bool = True
+    capture_requests: bool = True
+    max_sample_records: int = Field(default=2, ge=1)
+    max_enrich_trace_entries: int = Field(default=5, ge=0)
+    max_request_logs: int = Field(default=20, ge=0)
+    redact_fields: List[str] = Field(
+        default_factory=lambda: ["apiKey", "insttoken", "Authorization"]
+    )
+
+
+class GeoBiasConfig(BaseModel):
+    """Configuration for geo-bias metrics and gating."""
+
+    top_k_country_min_coverage: float = Field(default=0.4, ge=0.0, le=1.0)
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -137,6 +157,8 @@ class AppConfig(BaseModel):
     impact_factor: Optional[ImpactFactorConfig] = None
     scopus: ScopusEnrichConfig = Field(default_factory=ScopusEnrichConfig)
     scopus_enrich: ScopusEnrichConfig = Field(default_factory=ScopusEnrichConfig)
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
+    geo: GeoBiasConfig = Field(default_factory=GeoBiasConfig)
 
     @model_validator(mode="before")
     @classmethod
