@@ -107,9 +107,7 @@ class ScopusEnrichConfig(BaseModel):
 
     abstract_view: str = "FULL"
     abstract_fields: Optional[str] = None
-    abstract_fallback_views: List[Optional[str]] = Field(
-        default_factory=lambda: ["META", None]
-    )
+    abstract_fallback_views: List[Optional[str]] = Field(default_factory=lambda: ["META", None])
     abstract_fields_minimal: Optional[str] = (
         "dc:title,prism:doi,prism:publicationName,prism:issn,prism:coverDate,"
         "citedby-count,openaccessFlag,subtype,subtypeDescription,affiliation-country,affilname"
@@ -136,6 +134,127 @@ class DiagnosticsConfig(BaseModel):
     )
 
 
+class LLMGenerationConfig(BaseModel):
+    """Generation controls for LLM audit requests."""
+
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=1200, ge=1)
+    top_p: float = Field(default=1.0, gt=0.0, le=1.0)
+    timeout_seconds: float = Field(default=60.0, gt=0.0)
+    repeats_per_query: int = Field(default=1, ge=1, le=20)
+    top_k_articles: int = Field(default=10, ge=1, le=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "max_tokens" not in data and "max_output_tokens" in data:
+            data["max_tokens"] = data["max_output_tokens"]
+        if "timeout_seconds" not in data and "timeout_s" in data:
+            data["timeout_seconds"] = data["timeout_s"]
+        if "repeats_per_query" not in data and "repeats_per_prompt" in data:
+            data["repeats_per_query"] = data["repeats_per_prompt"]
+        return data
+
+
+class LLMQueriesConfig(BaseModel):
+    """Query-driven retrieval benchmark configuration."""
+
+    input_csv: Path = Path("queries/queries.csv")
+    prompt_template_file: Path = Path("prompts/article_retrieval.txt")
+
+
+class LLMScenariosConfig(BaseModel):
+    """Optional controlled bias probe configuration."""
+
+    input_file: Path = Path("configs/llm_scenarios.example.yaml")
+
+
+class LLMParsingConfig(BaseModel):
+    """Normalization/parsing policy for raw LLM outputs."""
+
+    require_json: bool = True
+
+
+class LLMEnrichmentConfig(BaseModel):
+    """Optional metadata enrichment controls."""
+
+    enabled: bool = True
+
+
+class LLMConfig(BaseModel):
+    """Top-level LLM pipeline configuration."""
+
+    enabled: bool = False
+    provider: str = "openrouter"
+    mode: Literal["query_csv", "scenarios"] = "query_csv"
+    models: List[str] = Field(default_factory=list)
+    generation: LLMGenerationConfig = Field(default_factory=LLMGenerationConfig)
+    queries: LLMQueriesConfig = Field(default_factory=LLMQueriesConfig)
+    controlled_bias_probes: LLMScenariosConfig = Field(default_factory=LLMScenariosConfig)
+    output_dir: Path = Path("runs/llm")
+    parsing: LLMParsingConfig = Field(default_factory=LLMParsingConfig)
+    enrichment: LLMEnrichmentConfig = Field(default_factory=LLMEnrichmentConfig)
+    save_payloads: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if not data.get("models") and isinstance(data.get("experiments"), list):
+            models: list[str] = []
+            provider = data.get("provider")
+            generation = data.get("generation") if isinstance(data.get("generation"), dict) else {}
+            for experiment in data["experiments"]:
+                if not isinstance(experiment, dict):
+                    continue
+                model = experiment.get("model")
+                if isinstance(model, str) and model.strip():
+                    models.append(model.strip())
+                if provider is None and isinstance(experiment.get("backend"), str):
+                    provider = experiment["backend"]
+                if not generation and isinstance(experiment.get("generation"), dict):
+                    generation = experiment["generation"]
+            if models:
+                data["models"] = models
+            if provider is not None:
+                data["provider"] = provider
+            if generation:
+                data["generation"] = generation
+
+        prompts = data.get("prompts")
+        scenarios = data.get("scenarios")
+        controlled = data.get("controlled_bias_probes")
+        if controlled is None:
+            if isinstance(scenarios, dict):
+                data["controlled_bias_probes"] = scenarios
+            elif isinstance(prompts, dict):
+                data["controlled_bias_probes"] = prompts
+        if "mode" not in data:
+            has_queries = isinstance(data.get("queries"), dict)
+            has_probe_input = isinstance(data.get("controlled_bias_probes"), dict) or isinstance(
+                prompts, dict
+            )
+            if has_probe_input and not has_queries:
+                data["mode"] = "scenarios"
+        return data
+
+    @model_validator(mode="after")
+    def _dedupe_models(self) -> "LLMConfig":
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for model in self.models:
+            key = str(model).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(key)
+        self.models = deduped
+        return self
+
+
 class GeoBiasConfig(BaseModel):
     """Configuration for geo-bias metrics and gating."""
 
@@ -157,6 +276,7 @@ class AppConfig(BaseModel):
     impact_factor: Optional[ImpactFactorConfig] = None
     scopus: ScopusEnrichConfig = Field(default_factory=ScopusEnrichConfig)
     scopus_enrich: ScopusEnrichConfig = Field(default_factory=ScopusEnrichConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     geo: GeoBiasConfig = Field(default_factory=GeoBiasConfig)
 

@@ -22,11 +22,18 @@ from ai_bias_search.diagnostics.capture import (
 from ai_bias_search.diagnostics.sanity import run_sanity_checks
 from ai_bias_search.enrichment.scopus_rankings import enrich_with_scopus_rankings
 from ai_bias_search.evaluation.biases import compute_bias_metrics
-from ai_bias_search.normalize.records import normalize_records
 from ai_bias_search.evaluation.overlap import jaccard, overlap_at_k
 from ai_bias_search.evaluation.ranking_similarity import rbo
+from ai_bias_search.llm.pipeline import (
+    run_llm_collect,
+    run_llm_eval,
+    run_llm_normalize,
+    run_llm_pipeline,
+    run_llm_report,
+)
 from ai_bias_search.normalization.openalex_enrich import enrich_with_openalex
 from ai_bias_search.normalization.scopus_enrich import enrich_with_scopus
+from ai_bias_search.normalize.records import normalize_records
 from ai_bias_search.report.make_report import generate_report
 from ai_bias_search.utils.config import AppConfig, RateLimitConfig, load_config
 from ai_bias_search.utils.io import (
@@ -43,12 +50,15 @@ from ai_bias_search.utils.rate_limit import RateLimiter
 
 LOGGER = configure_logging()
 app = typer.Typer(add_completion=False)
+llm_app = typer.Typer(add_completion=False, help="LLM audit pipeline commands.")
+app.add_typer(llm_app, name="llm")
 
 CONFIG_OPTION = typer.Option(..., help="Path to YAML configuration file.")
 COLLECT_TIMESTAMP_OPTION = typer.Option(None, help="Specific collection timestamp to process.")
 ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to evaluate.")
 METRICS_TIMESTAMP_OPTION = typer.Option(None, help="Specific metrics timestamp to include.")
 REPORT_ENRICHED_TIMESTAMP_OPTION = typer.Option(None, help="Specific enrichment timestamp to use.")
+LLM_RUN_ID_OPTION = typer.Option(None, help="Existing LLM run id. Defaults to the latest run.")
 ENRICH_SCOPUS_RANKINGS_OPTION = typer.Option(
     False,
     "--enrich-scopus-rankings/--no-enrich-scopus-rankings",
@@ -98,6 +108,63 @@ def _latest_file(directory: Path, pattern: str) -> Optional[Path]:
     return matches[-1] if matches else None
 
 
+def _run_llm_collect_command(*, config: Path, run_id: Optional[str]) -> None:
+    _load_env()
+    app_config = _load_app_config(config)
+    try:
+        run_dir = run_llm_collect(app_config, base_dir=config.parent, run_id=run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.error("llm-collect failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    LOGGER.info("llm-collect wrote %s", run_dir)
+
+
+def _run_llm_normalize_command(*, config: Path, run_id: Optional[str]) -> None:
+    _load_env()
+    app_config = _load_app_config(config)
+    try:
+        output_path = run_llm_normalize(app_config, base_dir=config.parent, run_id=run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.error("llm-normalize failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    LOGGER.info("llm-normalize wrote %s", output_path)
+
+
+def _run_llm_eval_command(*, config: Path, run_id: Optional[str]) -> None:
+    _load_env()
+    app_config = _load_app_config(config)
+    try:
+        output_path = run_llm_eval(app_config, base_dir=config.parent, run_id=run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.error("llm-eval failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    LOGGER.info("llm-eval wrote %s", output_path)
+
+
+def _run_llm_report_command(*, config: Path, run_id: Optional[str]) -> None:
+    _load_env()
+    _ensure_mpl_config_dir()
+    app_config = _load_app_config(config)
+    try:
+        output_path = run_llm_report(app_config, base_dir=config.parent, run_id=run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.error("llm-report failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    LOGGER.info("llm-report wrote %s", output_path)
+
+
+def _run_llm_pipeline_command(*, config: Path) -> None:
+    _load_env()
+    _ensure_mpl_config_dir()
+    app_config = _load_app_config(config)
+    try:
+        run_dir = run_llm_pipeline(app_config, base_dir=config.parent)
+    except (FileNotFoundError, ValueError) as exc:
+        LOGGER.error("llm-run failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    LOGGER.info("llm-run finished in %s", run_dir)
+
+
 def _json_compatible(value: Any) -> Any:
     if value is None:
         return None
@@ -137,12 +204,14 @@ def _merge_canonical_metadata(
         updated["issn_list"] = issn_values or None
     canonical_issn = canonical.get("issn")
     if canonical_issn is not None and (
-        updated.get("issn") is None or (isinstance(updated.get("issn"), str) and not str(updated.get("issn")).strip())
+        updated.get("issn") is None
+        or (isinstance(updated.get("issn"), str) and not str(updated.get("issn")).strip())
     ):
         updated["issn"] = canonical_issn
     canonical_eissn = canonical.get("eissn")
     if canonical_eissn is not None and (
-        updated.get("eissn") is None or (isinstance(updated.get("eissn"), str) and not str(updated.get("eissn")).strip())
+        updated.get("eissn") is None
+        or (isinstance(updated.get("eissn"), str) and not str(updated.get("eissn")).strip())
     ):
         updated["eissn"] = canonical_eissn
     for key in ("issn_source", "issn_provenance", "year_raw", "year_enriched", "year_provenance"):
@@ -237,6 +306,50 @@ def collect(
         LOGGER.info("Saved %s records for %s to %s", len(results), platform, output_path)
     if capture_requests:
         persist_request_capture(Path("results/request_logs.json"), merge_existing=True)
+
+
+@app.command("llm-collect")
+def llm_collect(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Collect raw LLM responses for the separate OpenRouter audit pipeline."""
+
+    _run_llm_collect_command(config=config, run_id=run_id)
+
+
+@llm_app.command("collect")
+def llm_collect_grouped(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Collect raw LLM responses for the query-driven LLM audit pipeline."""
+
+    _run_llm_collect_command(config=config, run_id=run_id)
+
+
+@app.command("llm-normalize")
+def llm_normalize(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Normalize collected LLM responses into typed structured outputs."""
+
+    _run_llm_normalize_command(config=config, run_id=run_id)
+
+
+@llm_app.command("normalize")
+def llm_normalize_grouped(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Normalize collected LLM responses into typed structured outputs."""
+
+    _run_llm_normalize_command(config=config, run_id=run_id)
 
 
 @app.command()
@@ -404,6 +517,28 @@ def eval(
     LOGGER.info("Metrics saved to %s", output_path)
 
 
+@app.command("llm-eval")
+def llm_eval(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Enrich normalized LLM recommendations and compute bias metrics."""
+
+    _run_llm_eval_command(config=config, run_id=run_id)
+
+
+@llm_app.command("eval")
+def llm_eval_grouped(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Enrich normalized LLM recommendations and compute bias metrics."""
+
+    _run_llm_eval_command(config=config, run_id=run_id)
+
+
 @app.command()
 def report(
     *,
@@ -435,6 +570,58 @@ def report(
     timestamp = utc_timestamp()
     output_path = Path("results/reports") / f"{timestamp}.html"
     generate_report(enriched_path, chosen_metrics_dir, output_path)
+
+
+@app.command("llm-report")
+def llm_report(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Generate the shared HTML report for one LLM audit run."""
+
+    _run_llm_report_command(config=config, run_id=run_id)
+
+
+@llm_app.command("report")
+def llm_report_grouped(
+    *,
+    config: Path = CONFIG_OPTION,
+    run_id: Optional[str] = LLM_RUN_ID_OPTION,
+) -> None:
+    """Generate the shared HTML report for one LLM audit run."""
+
+    _run_llm_report_command(config=config, run_id=run_id)
+
+
+@app.command("llm-run")
+def llm_run(
+    *,
+    config: Path = CONFIG_OPTION,
+) -> None:
+    """Run llm-collect, llm-normalize, llm-eval, and llm-report in sequence."""
+
+    _run_llm_pipeline_command(config=config)
+
+
+@llm_app.command("run")
+def llm_run_grouped(
+    *,
+    config: Path = CONFIG_OPTION,
+) -> None:
+    """Run collect, normalize, eval, and report for the LLM audit pipeline."""
+
+    _run_llm_pipeline_command(config=config)
+
+
+@app.command("llm-pipeline")
+def llm_pipeline(
+    *,
+    config: Path = CONFIG_OPTION,
+) -> None:
+    """Backward-compatible alias for `llm-run`."""
+
+    _run_llm_pipeline_command(config=config)
 
 
 def main() -> None:  # pragma: no cover

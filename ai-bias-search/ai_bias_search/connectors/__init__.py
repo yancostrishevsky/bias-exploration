@@ -9,8 +9,8 @@ from .consensus import ConsensusConnector
 from .core import CoreConnector
 from .openalex import OpenAlexConnector
 from .perplexity import PerplexityConnector
-from .scopus import ScopusConnector
 from .scite import SciteConnector
+from .scopus import ScopusConnector
 from .semanticscholar import SemanticScholarConnector
 
 CONNECTOR_REGISTRY: Dict[str, Type[SearchConnector]] = {

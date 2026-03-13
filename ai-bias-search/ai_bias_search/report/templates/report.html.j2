@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bias exploration</title>
+  <title>{{ report_title or "Bias exploration" }}</title>
   <style>
     :root {
       --bg: #f4f6f8;
@@ -201,13 +201,22 @@
       <h2>Contents</h2>
       <a href="#summary">Summary</a>
       <a href="#interactive">Interactive Charts</a>
-      <a href="#compare">Platform Compare</a>
+      <a href="#compare">{{ entity_label_singular }} Compare</a>
       <a href="#missingness">Missingness</a>
       <a href="#enrichment">Enrichment Gain</a>
       <a href="#overlap">Record Overlap</a>
       <a href="#rank-bias">Ranking Bias</a>
       <a href="#geo-bias">Geo Bias</a>
       <a href="#venue-diversity">Venue Diversity</a>
+      {% if llm_specific and llm_specific.present %}
+      <a href="#llm-hallucination">LLM Verification</a>
+      <a href="#llm-parse">Parse Robustness</a>
+      <a href="#llm-divergence">Cross-Model Divergence</a>
+      <a href="#llm-stability">Repeatability</a>
+      <a href="#llm-usefulness">Bibliographic Quality</a>
+      <a href="#llm-conflicts">Metadata Conflicts</a>
+      <a href="#llm-query-details">LLM Query Details</a>
+      {% endif %}
       <a href="#notes">Notes / Gating</a>
       <a href="#downloads">Download data</a>
       <a href="#jif-jcr">JIF / JCR</a>
@@ -217,12 +226,15 @@
 
     <main>
       <section id="summary" class="card">
-        <h1>AI Bias exploration Report</h1>
-        <p class="muted">Total records: {{ summary.total_records }} | Platforms: {{ summary.platforms | join(", ") }}</p>
+        <h1>{{ report_title or "AI Bias exploration Report" }}</h1>
+        <p class="muted">Total records: {{ summary.total_records }} | {{ entity_label_plural }}: {{ summary.platforms | join(", ") }}</p>
         {% if metrics_timestamp %}
         <p class="muted">Metrics ({{ metrics_timestamp }})</p>
         {% else %}
         <p class="muted">No metrics available.</p>
+        {% endif %}
+        {% if llm_specific and llm_specific.present %}
+        <p class="muted">Queries: {{ llm_specific.query_count }} | Calls: {{ llm_specific.call_count }}</p>
         {% endif %}
       </section>
 
@@ -230,7 +242,7 @@
         <h2>Interactive visualizations</h2>
         <div class="controls">
           <div>
-            <label for="platform-filter">Platform</label>
+            <label for="platform-filter">{{ entity_label_singular }}</label>
             <select id="platform-filter">
               {% for platform in interactive.payload.platforms %}
               <option value="{{ platform }}">{{ platform }}</option>
@@ -300,7 +312,7 @@
       </section>
 
       <section id="compare" class="card">
-        <h2>Platform Compare</h2>
+        <h2>{{ entity_label_singular }} Compare</h2>
         <div id="chart-platform-compare" class="chart-box"></div>
         <div id="placeholder-platform-compare" class="plot-placeholder"></div>
       </section>
@@ -395,6 +407,254 @@
         <div id="placeholder-venue-diversity" class="plot-placeholder"></div>
       </section>
 
+      {% if llm_specific and llm_specific.present %}
+      <section id="llm-hallucination" class="card">
+        <h2>LLM Hallucination / Verifiability</h2>
+        <div id="chart-llm-hallucination" class="chart-box"></div>
+        <div id="placeholder-llm-hallucination" class="plot-placeholder"></div>
+        <div class="table-wrap">
+          <table class="js-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>DOI Rate</th>
+                <th>Matched Rate</th>
+                <th>Unmatched Rate</th>
+                <th>Conflict Rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in llm_specific.hallucination_rows %}
+              <tr>
+                <td>{{ row.model }}</td>
+                <td>{{ "%.1f%%"|format((row.valid_doi_proportion or 0) * 100) if row.valid_doi_proportion is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.matched_proportion or 0) * 100) if row.matched_proportion is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.unmatched_proportion or 0) * 100) if row.unmatched_proportion is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.any_conflict_rate or 0) * 100) if row.any_conflict_rate is not none else "N/A" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="llm-parse" class="card">
+        <h2>LLM Parse Robustness</h2>
+        <div id="chart-llm-parse" class="chart-box"></div>
+        <div id="placeholder-llm-parse" class="plot-placeholder"></div>
+        <div class="table-wrap">
+          <table class="js-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Calls</th>
+                <th>Raw Success</th>
+                <th>Strict JSON</th>
+                <th>Fallback Parse</th>
+                <th>Parse Failure</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in llm_specific.parse_rows %}
+              <tr>
+                <td>{{ row.model }}</td>
+                <td>{{ row.call_count if row.call_count is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.raw_success_rate or 0) * 100) if row.raw_success_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.strict_json_rate or 0) * 100) if row.strict_json_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.repaired_parse_rate or 0) * 100) if row.repaired_parse_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.parse_failure_rate or 0) * 100) if row.parse_failure_rate is not none else "N/A" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="llm-divergence" class="card">
+        <h2>LLM Cross-Model Divergence</h2>
+        <div class="table-wrap">
+          <table class="js-table">
+            <thead>
+              <tr>
+                <th>Left Model</th>
+                <th>Right Model</th>
+                <th>Mean Jaccard</th>
+                <th>Overlap@5</th>
+                <th>Top-1 Agreement</th>
+                <th>Comparisons</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in llm_specific.cross_model_rows %}
+              <tr>
+                <td>{{ row.left_model }}</td>
+                <td>{{ row.right_model }}</td>
+                <td>{{ "%.3f"|format(row.mean_jaccard) if row.mean_jaccard is not none else "N/A" }}</td>
+                <td>{{ "%.3f"|format(row.mean_overlap_at_5) if row.mean_overlap_at_5 is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.top1_agreement or 0) * 100) if row.top1_agreement is not none else "N/A" }}</td>
+                <td>{{ row.comparisons }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="llm-stability" class="card">
+        <h2>LLM Stability / Repeatability</h2>
+        <details open>
+          <summary>Per-model stability summary</summary>
+          <div class="table-wrap">
+            <table class="js-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Mean Jaccard</th>
+                  <th>Overlap@5</th>
+                  <th>Year Variance</th>
+                  <th>OA Variance</th>
+                  <th>Citation Variance</th>
+                  <th>Parse Failure</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in llm_specific.stability_summary_rows %}
+                <tr>
+                  <td>{{ row.model }}</td>
+                  <td>{{ "%.3f"|format(row.mean_jaccard) if row.mean_jaccard is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.mean_overlap_at_5) if row.mean_overlap_at_5 is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.year_mean_variance) if row.year_mean_variance is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.oa_share_variance) if row.oa_share_variance is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.citation_mean_variance) if row.citation_mean_variance is not none else "N/A" }}</td>
+                  <td>{{ "%.1f%%"|format((row.parse_failure_rate or 0) * 100) if row.parse_failure_rate is not none else "N/A" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        <details>
+          <summary>Per-query repeatability</summary>
+          <div class="table-wrap">
+            <table class="js-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Query</th>
+                  <th>Repeats</th>
+                  <th>Mean Jaccard</th>
+                  <th>Overlap@5</th>
+                  <th>Parse Failure</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in llm_specific.stability_rows %}
+                <tr>
+                  <td>{{ row.model }}</td>
+                  <td>{{ row.query_id }}</td>
+                  <td>{{ row.repeat_count }}</td>
+                  <td>{{ "%.3f"|format(row.mean_jaccard) if row.mean_jaccard is not none else "N/A" }}</td>
+                  <td>{{ "%.3f"|format(row.mean_overlap_at_5) if row.mean_overlap_at_5 is not none else "N/A" }}</td>
+                  <td>{{ "%.1f%%"|format((row.parse_failure_rate or 0) * 100) if row.parse_failure_rate is not none else "N/A" }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section id="llm-usefulness" class="card">
+        <h2>Retrieval Usefulness / Bibliographic Quality</h2>
+        <div class="table-wrap">
+          <table class="js-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Valid DOI</th>
+                <th>Title Match</th>
+                <th>Metadata Coverage</th>
+                <th>Evaluable Records</th>
+                <th>Mean Verifiable / Query</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in llm_specific.usefulness_rows %}
+              <tr>
+                <td>{{ row.model }}</td>
+                <td>{{ "%.1f%%"|format((row.valid_doi_rate or 0) * 100) if row.valid_doi_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.title_match_rate or 0) * 100) if row.title_match_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.metadata_coverage_rate or 0) * 100) if row.metadata_coverage_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.evaluable_record_rate or 0) * 100) if row.evaluable_record_rate is not none else "N/A" }}</td>
+                <td>{{ "%.2f"|format(row.mean_verifiable_per_query) if row.mean_verifiable_per_query is not none else "N/A" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="llm-conflicts" class="card">
+        <h2>LLM Claimed vs Enriched Metadata Conflicts</h2>
+        <div class="table-wrap">
+          <table class="js-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Any Conflict</th>
+                <th>Year Conflict</th>
+                <th>Journal Conflict</th>
+                <th>DOI Conflict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in llm_specific.conflict_rows %}
+              <tr>
+                <td>{{ row.model }}</td>
+                <td>{{ "%.1f%%"|format((row.any_conflict_rate or 0) * 100) if row.any_conflict_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.year_conflict_rate or 0) * 100) if row.year_conflict_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.journal_conflict_rate or 0) * 100) if row.journal_conflict_rate is not none else "N/A" }}</td>
+                <td>{{ "%.1f%%"|format((row.doi_conflict_rate or 0) * 100) if row.doi_conflict_rate is not none else "N/A" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="llm-query-details" class="card">
+        <h2>LLM Query Details</h2>
+        <div class="table-toolbar">
+          <input class="table-filter" id="llm-query-filter" placeholder="Filter query cards..." />
+        </div>
+        {% for query in llm_specific.query_details %}
+        <details class="llm-query-card" data-search="{{ (query.query_id ~ ' ' ~ query.query_text ~ ' ' ~ (query.query_category or '') ~ ' ' ~ query.prompt_text)|lower }}">
+          <summary>{{ query.query_id }} | {{ query.query_text }}</summary>
+          <p class="muted">{{ query.query_category or "uncategorized" }}{% if query.query_language %} | {{ query.query_language }}{% endif %}</p>
+          <pre>{{ query.prompt_text }}</pre>
+          {% for response in query.responses %}
+          <details>
+            <summary>{{ response.model }} | repeat {{ response.repeat_index + 1 }} | {{ response.parse_status }}</summary>
+            {% if response.error_message %}<p class="muted">Error: {{ response.error_message }}</p>{% endif %}
+            <details>
+              <summary>Parsed articles</summary>
+              <pre>{{ response.article_recommendations | tojson(indent=2) }}</pre>
+            </details>
+            <details>
+              <summary>Enriched recommendations</summary>
+              <pre>{{ response.enriched_recommendations | tojson(indent=2) }}</pre>
+            </details>
+            <details>
+              <summary>Raw output</summary>
+              <pre>{{ response.raw_response_text or (response.raw_response_json | tojson(indent=2)) }}</pre>
+            </details>
+          </details>
+          {% endfor %}
+        </details>
+        {% endfor %}
+      </section>
+      {% endif %}
+
       <section id="notes" class="card">
         <h2>Notes / Gating</h2>
         {% if interactive.payload.warnings %}
@@ -419,10 +679,10 @@
             {% endif %}
           </li>
           <li>
-            {% if interactive.downloads.enriched_parquet %}
-            <a href="{{ interactive.downloads.enriched_parquet }}">Enriched Parquet</a>
+            {% if interactive.downloads.enriched_dataset or interactive.downloads.enriched_parquet %}
+            <a href="{{ interactive.downloads.enriched_dataset or interactive.downloads.enriched_parquet }}">{{ enriched_download_label or "Enriched Parquet" }}</a>
             {% else %}
-            Enriched Parquet: unavailable
+            {{ enriched_download_label or "Enriched Parquet" }}: unavailable
             {% endif %}
           </li>
           <li>
@@ -442,7 +702,7 @@
         <div class="table-wrap">
           <table id="table-jcr-summary" class="js-table">
             <thead>
-              <tr><th>Platform</th><th>Eligible</th><th>Mean IF</th><th>Median IF</th><th>Median JCI</th><th>Q1 share</th><th>Missing</th><th>Top publishers</th></tr>
+              <tr><th>{{ entity_label_singular }}</th><th>Eligible</th><th>Mean IF</th><th>Median IF</th><th>Median JCI</th><th>Q1 share</th><th>Missing</th><th>Top publishers</th></tr>
             </thead>
             <tbody>
               {% for row in jcr_summary %}
@@ -469,14 +729,14 @@
         <h2>Tables</h2>
 
         <details open>
-          <summary>Bias Features Availability by Platform</summary>
+          <summary>Bias Features Availability by {{ entity_label_singular }}</summary>
           {% if bias_features_availability %}
           <div class="table-toolbar"><input class="table-filter" data-target="table-bias-features" placeholder="Filter rows..." /></div>
           <div class="table-wrap">
             <table id="table-bias-features" class="js-table">
               <thead>
                 <tr>
-                  <th>Platform</th><th>Total</th><th>OA %</th><th>Country %</th><th>Citations %</th><th>Doc type %</th><th>Publisher %</th><th>ISSN %</th>
+                  <th>{{ entity_label_singular }}</th><th>Total</th><th>OA %</th><th>Country %</th><th>Citations %</th><th>Doc type %</th><th>Publisher %</th><th>ISSN %</th>
                 </tr>
               </thead>
               <tbody>
@@ -506,7 +766,7 @@
             <table id="table-topk" class="js-table">
               <thead>
                 <tr>
-                  <th>Platform</th><th>K</th><th>OA top-K</th><th>OA overall</th><th>OA delta</th><th>Citation Spearman</th>
+                  <th>{{ entity_label_singular }}</th><th>K</th><th>OA top-K</th><th>OA overall</th><th>OA delta</th><th>Citation Spearman</th>
                 </tr>
               </thead>
               <tbody>
@@ -532,7 +792,7 @@
           <div class="table-toolbar"><input class="table-filter" data-target="table-core-ranking" placeholder="Filter rows..." /></div>
           <div class="table-wrap">
             <table id="table-core-ranking" class="js-table">
-              <thead><tr><th>Platform</th><th>Eligible</th><th>A*</th><th>A</th><th>B</th><th>C</th><th>Missing</th></tr></thead>
+              <thead><tr><th>{{ entity_label_singular }}</th><th>Eligible</th><th>A*</th><th>A</th><th>B</th><th>C</th><th>Missing</th></tr></thead>
               <tbody>
                 {% for row in core_ranking_table %}
                 <tr>
@@ -557,7 +817,7 @@
           <div class="table-toolbar"><input class="table-filter" data-target="table-core-match-source" placeholder="Filter rows..." /></div>
           <div class="table-wrap">
             <table id="table-core-match-source" class="js-table">
-              <thead><tr><th>Platform</th><th>Total</th><th>Matched</th><th>Matched %</th><th>ISSN</th><th>Title</th><th>Fuzzy</th><th>Unmatched</th></tr></thead>
+              <thead><tr><th>{{ entity_label_singular }}</th><th>Total</th><th>Matched</th><th>Matched %</th><th>ISSN</th><th>Title</th><th>Fuzzy</th><th>Unmatched</th></tr></thead>
               <tbody>
                 {% for row in core_match_source_breakdown %}
                 <tr>
@@ -583,7 +843,7 @@
           <div class="table-toolbar"><input class="table-filter" data-target="table-citations-quality" placeholder="Filter rows..." /></div>
           <div class="table-wrap">
             <table id="table-citations-quality" class="js-table">
-              <thead><tr><th>Platform</th><th>Total</th><th>Known %</th><th>OK</th><th>Missing</th><th>Suspicious</th></tr></thead>
+              <thead><tr><th>{{ entity_label_singular }}</th><th>Total</th><th>Known %</th><th>OK</th><th>Missing</th><th>Suspicious</th></tr></thead>
               <tbody>
                 {% for row in citations_quality_rows %}
                 <tr>
@@ -654,6 +914,7 @@
       const payloadNode = document.getElementById("interactive-report-data");
       if (!payloadNode) return;
       const data = JSON.parse(payloadNode.textContent || "{}");
+      const llmSpecific = {{ llm_specific | tojson }};
       window.__REPORT_DATA__ = data;
       const hasPlotly = typeof window.Plotly !== "undefined";
 
@@ -1108,6 +1369,46 @@
         );
       }
 
+      function renderLLMHallucination() {
+        if (!llmSpecific || !llmSpecific.present) return;
+        const rows = (llmSpecific.hallucination_rows || []).filter((row) => row.model !== "overall");
+        if (!rows.length) {
+          chartOrPlaceholder("chart-llm-hallucination", "placeholder-llm-hallucination", [], {}, "LLM verification data unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-llm-hallucination",
+          "placeholder-llm-hallucination",
+          [
+            { type: "bar", name: "Verified", x: rows.map((row) => row.model), y: rows.map((row) => row.matched_proportion || 0) },
+            { type: "bar", name: "Unmatched", x: rows.map((row) => row.model), y: rows.map((row) => row.unmatched_proportion || 0) },
+            { type: "bar", name: "Conflict", x: rows.map((row) => row.model), y: rows.map((row) => row.any_conflict_rate || 0) },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 75, l: 45 }, yaxis: { title: "Rate", range: [0, 1] } },
+          null
+        );
+      }
+
+      function renderLLMParse() {
+        if (!llmSpecific || !llmSpecific.present) return;
+        const rows = (llmSpecific.parse_rows || []).filter((row) => row.model !== "overall");
+        if (!rows.length) {
+          chartOrPlaceholder("chart-llm-parse", "placeholder-llm-parse", [], {}, "LLM parse metrics unavailable.");
+          return;
+        }
+        chartOrPlaceholder(
+          "chart-llm-parse",
+          "placeholder-llm-parse",
+          [
+            { type: "bar", name: "Strict JSON", x: rows.map((row) => row.model), y: rows.map((row) => row.strict_json_rate || 0) },
+            { type: "bar", name: "Fallback", x: rows.map((row) => row.model), y: rows.map((row) => row.repaired_parse_rate || 0) },
+            { type: "bar", name: "Failures", x: rows.map((row) => row.model), y: rows.map((row) => row.parse_failure_rate || 0) },
+          ],
+          { barmode: "group", margin: { t: 20, r: 20, b: 75, l: 45 }, yaxis: { title: "Rate", range: [0, 1] } },
+          null
+        );
+      }
+
       function applyMetricGroupVisibility() {
         const selected = (metricFilter && metricFilter.value) || "all";
         document.querySelectorAll(".chart-card[data-group]").forEach((node) => {
@@ -1132,6 +1433,8 @@
         renderJIFQuartileBias();
         renderGeoBias();
         renderVenueDiversity();
+        renderLLMHallucination();
+        renderLLMParse();
       }
 
       [platformFilter, metricFilter, topKFilter, compareMode, hideLow, showMissing, geoVariantFilter, geoGranularityFilter].forEach((node) => {
@@ -1183,6 +1486,17 @@
           sortTableByColumn(table, index, asc);
         });
       });
+
+      const llmQueryFilter = document.getElementById("llm-query-filter");
+      if (llmQueryFilter) {
+        llmQueryFilter.addEventListener("input", () => {
+          const query = llmQueryFilter.value.trim().toLowerCase();
+          document.querySelectorAll(".llm-query-card").forEach((card) => {
+            const text = (card.getAttribute("data-search") || "").toLowerCase();
+            card.style.display = !query || text.includes(query) ? "" : "none";
+          });
+        });
+      }
     })();
   </script>
 </body>

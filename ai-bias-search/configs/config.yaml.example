@@ -16,6 +16,32 @@ rate_limit:
 retries:
   max: 3
   backoff: 1.5
+llm:
+  enabled: false
+  provider: openrouter
+  mode: query_csv
+  models:
+    - openai/gpt-4o-mini
+    - anthropic/claude-3.5-sonnet
+    - google/gemini-2.0-flash-001
+  generation:
+    temperature: 0.1
+    max_tokens: 1500
+    top_p: 1.0
+    timeout_seconds: 60
+    repeats_per_query: 2
+    top_k_articles: 10
+  queries:
+    input_csv: queries/queries.csv
+    prompt_template_file: prompts/article_retrieval.txt
+  controlled_bias_probes:
+    input_file: configs/llm_scenarios.example.yaml
+  output_dir: runs/llm
+  parsing:
+    require_json: true
+  enrichment:
+    enabled: true
+  save_payloads: true
 diagnostics:
   enabled: true
   capture_samples: true

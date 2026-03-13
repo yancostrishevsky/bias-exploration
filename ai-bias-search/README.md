@@ -148,6 +148,32 @@ Connectors are registered in a static mapping:
   - logs Elsevier request/transaction IDs when present in response headers
   - never logs API key or institutional token values
 
+### Separate LLM Pipeline (`llm-*` commands)
+LLM benchmarking is intentionally separated from the scholarly connector pipeline.
+
+- Implementation:
+  - `ai_bias_search/llm/`
+  - `ai_bias_search/providers/openrouter.py`
+- Entry points:
+  - `llm collect` / `llm-collect` → read `queries.csv`, render prompts from a reusable template, and store raw JSONL
+  - `llm-normalize` → parse raw outputs into typed recommendation/ranking records
+  - `llm-eval` → optionally enrich recommendations with OpenAlex and compute bias metrics
+  - `llm-report` → render the shared interactive HTML report for one run, with LLM sections
+  - `llm-run` / `llm-pipeline` → full end-to-end LLM workflow
+- Default workflow:
+  - query-driven literature retrieval benchmark from `llm.queries.input_csv`
+  - prompt generation from `llm.queries.prompt_template_file`
+  - optional secondary `controlled_bias_probes` mode for hand-authored paired scenarios
+- Data separation:
+  - `runs/llm/<timestamp>/raw_responses.jsonl`
+  - `runs/llm/<timestamp>/normalized_responses.jsonl`
+  - `runs/llm/<timestamp>/enriched_recommendations.jsonl`
+  - `runs/llm/<timestamp>/metrics.json`
+  - `runs/llm/<timestamp>/report.html`
+  - `runs/llm/<timestamp>/manifest.json`
+- Provenance:
+  - every run stores the effective config snapshot and can optionally save per-call request/response payloads under `runs/llm/<timestamp>/payloads/`.
+
 ### Placeholder connectors (scaffolding)
 These connectors exist as explicit placeholders and raise `ConnectorError`:
 - `perplexity` (`PERPLEXITY_API_KEY` gate; not implemented)
@@ -358,6 +384,36 @@ scopus:
     rate_limit: 1.0
 ```
 
+Optional `llm` block:
+```yaml
+llm:
+  enabled: true
+  provider: openrouter
+  mode: query_csv
+  models:
+    - openai/gpt-4o-mini
+    - anthropic/claude-3.5-sonnet
+    - google/gemini-2.0-flash-001
+  generation:
+    temperature: 0.1
+    max_tokens: 1500
+    top_p: 1.0
+    timeout_seconds: 60
+    repeats_per_query: 2
+    top_k_articles: 10
+  queries:
+    input_csv: queries/queries.csv
+    prompt_template_file: prompts/article_retrieval.txt
+  controlled_bias_probes:
+    input_file: configs/llm_scenarios.example.yaml
+  output_dir: runs/llm
+  parsing:
+    require_json: true
+  enrichment:
+    enabled: true
+  save_payloads: true
+```
+
 Optional diagnostics capture block:
 ```yaml
 diagnostics:
@@ -398,6 +454,7 @@ Environment variables are loaded from `.env` at runtime (`python-dotenv`). See `
 
 Common variables:
 - `LOG_LEVEL` (default `INFO`)
+- `OPENROUTER_API_KEY` (required for the separate LLM audit pipeline)
 - `SEMANTIC_SCHOLAR_API_KEY`
 - `CORE_API_KEY`
 - `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`, when `scopus.enabled: true`)
@@ -427,6 +484,17 @@ The CLI is implemented with Typer in `ai_bias_search/cli.py`. The package also i
 - `enrich --config <path> [--run-timestamp <collect_ts>] [--enrich-scopus-rankings]`: enrich latest/specified raw snapshots and write Parquet under `data/enriched/`
 - `eval --config <path> [--run-timestamp <enriched_ts>]`: compute metrics from latest/specified Parquet and write JSON under `results/metrics/`
 - `report --config <path> [--enriched-timestamp <enriched_ts>]`: generate HTML under `results/reports/`
+- `llm collect --config <path> [--run-id <id>]`: query-driven LLM retrieval benchmark collect stage
+- `llm normalize --config <path> [--run-id <id>]`: normalize raw LLM outputs for a run
+- `llm eval --config <path> [--run-id <id>]`: enrich normalized recommendations and compute LLM bias metrics
+- `llm report --config <path> [--run-id <id>]`: generate the dedicated LLM HTML report
+- `llm run --config <path>`: run `llm collect` → `llm normalize` → `llm eval` → `llm report`
+- `llm-collect --config <path> [--run-id <id>]`: create a new LLM audit run and store raw outputs under `runs/llm/<run_id>/`
+- `llm-normalize --config <path> [--run-id <id>]`: normalize raw LLM outputs for a run
+- `llm-eval --config <path> [--run-id <id>]`: enrich normalized recommendations and compute LLM bias metrics
+- `llm-report --config <path> [--run-id <id>]`: generate the dedicated LLM HTML report
+- `llm-run --config <path>`: run `llm-collect` → `llm-normalize` → `llm-eval` → `llm-report`
+- `llm-pipeline --config <path>`: backward-compatible alias for `llm-run`
 
 Notes:
 - `report` always loads the **latest metrics JSON** present in `results/metrics/`. The CLI option `--metrics-timestamp` is currently accepted but not used by the implementation.
@@ -452,10 +520,25 @@ python -m ai_bias_search.cli eval    --config config.yaml
 python -m ai_bias_search.cli report  --config config.yaml
 ```
 
+LLM pipeline example (OpenRouter backend configured in `llm`):
+```bash
+python -m ai_bias_search.cli llm collect --config config.yaml
+python -m ai_bias_search.cli llm normalize --config config.yaml
+python -m ai_bias_search.cli llm eval --config config.yaml
+python -m ai_bias_search.cli llm report --config config.yaml
+```
+
+Query-driven inputs:
+- `queries/llm_queries.example.csv`: example benchmark query list
+- `prompts/article_retrieval.txt`: reusable prompt template for literature retrieval
+- `configs/llm_scenarios.example.yaml`: optional secondary probe dataset for controlled bias comparisons
+
 Task runner shortcuts:
 ```bash
 just setup
 just pipeline
+just llm-run
+just llm-pipeline
 ```
 
 Docker:

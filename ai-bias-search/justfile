@@ -37,6 +37,23 @@ eval:
 report:
     {{PYTHON}} -m ai_bias_search.cli report --config {{CONFIG}}
 
+llm-collect:
+    {{PYTHON}} -m ai_bias_search.cli llm collect --config {{CONFIG}}
+
+llm-normalize:
+    {{PYTHON}} -m ai_bias_search.cli llm normalize --config {{CONFIG}}
+
+llm-eval:
+    {{PYTHON}} -m ai_bias_search.cli llm eval --config {{CONFIG}}
+
+llm-report:
+    {{PYTHON}} -m ai_bias_search.cli llm report --config {{CONFIG}}
+
+llm-run:
+    {{PYTHON}} -m ai_bias_search.cli llm run --config {{CONFIG}}
+
+llm-pipeline: llm-run
+
 pipeline:
     {{PYTHON}} -m ai_bias_search.cli collect --config {{CONFIG}}
     {{PYTHON}} -m ai_bias_search.cli enrich --config {{CONFIG}}
@@ -44,7 +61,7 @@ pipeline:
     {{PYTHON}} -m ai_bias_search.cli report --config {{CONFIG}}
 
 clean:
-    rm -rf data/raw data/enriched data/cache results/metrics results/reports results/figs
+    rm -rf data/raw data/enriched data/cache results/metrics results/reports results/figs runs
     rm -rf .pytest_cache .ruff_cache .mypy_cache .uv-cache .coverage htmlcov
 
 docker-build:

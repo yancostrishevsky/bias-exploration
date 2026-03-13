@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import os
-import base64
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
@@ -54,63 +55,105 @@ def generate_report(enriched_path: Path, metrics_dir: Path, output_path: Path) -
     data = read_parquet(enriched_path)
     latest_metrics, metrics_timestamp = _load_latest_metrics(metrics_dir)
     diagnostics = _load_diagnostics(metrics_dir, latest_metrics)
+    metrics_path = (metrics_dir / f"{metrics_timestamp}.json") if metrics_timestamp else None
+    context = build_report_context(
+        frame=data,
+        latest_metrics=latest_metrics,
+        metrics_timestamp=metrics_timestamp,
+        diagnostics=diagnostics,
+        output_path=output_path,
+        metrics_path=metrics_path if metrics_path and metrics_path.exists() else None,
+        enriched_download_path=enriched_path,
+    )
+    return render_report_context(output_path=output_path, context=context)
+
+
+def render_report_context(*, output_path: Path, context: Mapping[str, Any]) -> Path:
+    """Render the shared report template with a prepared context."""
 
     env = Environment(
         loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
         autoescape=select_autoescape(["html", "j2"]),
     )
     template = env.get_template("report.html.j2")
-
-    summary = {
-        "total_records": len(data),
-        "platforms": (
-            sorted(str(value) for value in data.get("platform").dropna().unique().tolist())
-            if "platform" in data.columns
-            else []
-        ),
-    }
-
-    interactive_context = _build_interactive_context(
-        frame=data,
-        metrics=latest_metrics,
-        diagnostics=diagnostics,
-        metrics_dir=metrics_dir,
-        metrics_timestamp=metrics_timestamp,
-        enriched_path=enriched_path,
-        output_path=output_path,
-    )
-    jcr_summary = _jcr_summary(data)
-    jif_context = _generate_jif_context(data)
-    rankings_coverage_table = _rankings_coverage_table(data)
-    core_match_source_breakdown = _core_match_source_rows(data)
-    scopus_summary = _scopus_summary(data)
-    bias_features_availability = _bias_features_availability_rows(data)
-    citations_quality_rows = _citations_quality_rows(data)
-    top_k_bias_summary = _top_k_bias_summary_rows(latest_metrics)
-
-    preview = _prepare_sample_table(data.drop(columns=["extra"], errors="ignore")).head(50)
-    core_ranking_rows = core_ranking_table(data)
-    rendered = template.render(
-        summary=summary,
-        latest_metrics=latest_metrics,
-        metrics_timestamp=metrics_timestamp,
-        table=preview.to_dict(orient="records"),
-        core_ranking_table=core_ranking_rows,
-        rankings_coverage_table=rankings_coverage_table,
-        core_match_source_breakdown=core_match_source_breakdown,
-        scopus_summary=scopus_summary,
-        bias_features_availability=bias_features_availability,
-        citations_quality_rows=citations_quality_rows,
-        diagnostics=diagnostics,
-        top_k_bias_summary=top_k_bias_summary,
-        jcr_summary=jcr_summary,
-        interactive=interactive_context,
-        **jif_context,
-    )
+    rendered = template.render(**context)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(rendered, encoding="utf-8")
     LOGGER.info("Report written to %s", output_path)
     return output_path
+
+
+def build_report_context(
+    *,
+    frame: pd.DataFrame,
+    latest_metrics: Mapping[str, Any],
+    metrics_timestamp: str | None,
+    diagnostics: Mapping[str, Any],
+    output_path: Path,
+    metrics_path: Path | None,
+    enriched_download_path: Path | None,
+    report_title: str = "AI Bias exploration Report",
+    entity_label_singular: str = "Platform",
+    entity_label_plural: str = "Platforms",
+    enriched_download_label: str = "Enriched Parquet",
+    summary_override: Mapping[str, Any] | None = None,
+    llm_specific: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the context consumed by the shared HTML report template."""
+
+    summary = dict(summary_override or {})
+    if "total_records" not in summary:
+        summary["total_records"] = len(frame)
+    if "platforms" not in summary:
+        summary["platforms"] = (
+            sorted(str(value) for value in frame.get("platform").dropna().unique().tolist())
+            if "platform" in frame.columns
+            else []
+        )
+    summary.setdefault("entity_label_singular", entity_label_singular)
+    summary.setdefault("entity_label_plural", entity_label_plural)
+
+    interactive_context = _build_interactive_context(
+        frame=frame,
+        metrics=latest_metrics,
+        diagnostics=diagnostics,
+        metrics_path=metrics_path,
+        enriched_download_path=enriched_download_path,
+        output_path=output_path,
+    )
+    jcr_summary = _jcr_summary(frame)
+    jif_context = _generate_jif_context(frame)
+    rankings_coverage_table = _rankings_coverage_table(frame)
+    core_match_source_breakdown = _core_match_source_rows(frame)
+    scopus_summary = _scopus_summary(frame)
+    bias_features_availability = _bias_features_availability_rows(frame)
+    citations_quality_rows = _citations_quality_rows(frame)
+    top_k_bias_summary = _top_k_bias_summary_rows(dict(latest_metrics))
+
+    preview = _prepare_sample_table(frame.drop(columns=["extra"], errors="ignore")).head(50)
+    core_ranking_rows = core_ranking_table(frame)
+    return {
+        "report_title": report_title,
+        "entity_label_singular": entity_label_singular,
+        "entity_label_plural": entity_label_plural,
+        "enriched_download_label": enriched_download_label,
+        "summary": summary,
+        "latest_metrics": latest_metrics,
+        "metrics_timestamp": metrics_timestamp,
+        "table": preview.to_dict(orient="records"),
+        "core_ranking_table": core_ranking_rows,
+        "rankings_coverage_table": rankings_coverage_table,
+        "core_match_source_breakdown": core_match_source_breakdown,
+        "scopus_summary": scopus_summary,
+        "bias_features_availability": bias_features_availability,
+        "citations_quality_rows": citations_quality_rows,
+        "diagnostics": diagnostics,
+        "top_k_bias_summary": top_k_bias_summary,
+        "jcr_summary": jcr_summary,
+        "interactive": interactive_context,
+        "llm_specific": llm_specific,
+        **jif_context,
+    }
 
 
 def _load_latest_metrics(metrics_dir: Path) -> tuple[Dict[str, dict], str | None]:
@@ -857,9 +900,8 @@ def _build_interactive_context(
     frame: pd.DataFrame,
     metrics: Mapping[str, Any],
     diagnostics: Mapping[str, Any],
-    metrics_dir: Path,
-    metrics_timestamp: str | None,
-    enriched_path: Path,
+    metrics_path: Path | None,
+    enriched_download_path: Path | None,
     output_path: Path,
 ) -> dict[str, Any]:
     normalized = (
@@ -916,7 +958,6 @@ def _build_interactive_context(
         chart_data_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(chart_rows).to_csv(chart_data_path, index=False)
 
-    metrics_path = (metrics_dir / f"{metrics_timestamp}.json") if metrics_timestamp else None
     warnings = diagnostics.get("warnings") if isinstance(diagnostics.get("warnings"), list) else []
     plotly_js, plotly_available = _load_plotly_js()
     plotly_cdn_url: str | None = None
@@ -933,7 +974,16 @@ def _build_interactive_context(
             if metrics_path is not None and metrics_path.exists()
             else None
         ),
-        "enriched_parquet": _to_relative_link(enriched_path, base=output_path.parent),
+        "enriched_dataset": (
+            _to_relative_link(enriched_download_path, base=output_path.parent)
+            if enriched_download_path is not None and enriched_download_path.exists()
+            else None
+        ),
+        "enriched_parquet": (
+            _to_relative_link(enriched_download_path, base=output_path.parent)
+            if enriched_download_path is not None and enriched_download_path.exists()
+            else None
+        ),
         "chart_data_csv": (
             _to_relative_link(chart_data_path, base=output_path.parent)
             if chart_data_path.exists()

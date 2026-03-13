@@ -23,6 +23,31 @@ Processing:
 Outputs:
 - `data/raw/<platform>/<timestamp>.jsonl`
 
+### Separate LLM pipeline
+
+Entry points:
+- `ai_bias_search/cli.py` → `llm collect`, `llm normalize`, `llm eval`, `llm report`, `llm run`
+- Flat aliases remain: `llm-collect`, `llm-normalize`, `llm-eval`, `llm-report`, `llm-run`
+
+Processing:
+- `llm-collect` defaults to query-driven collection from `llm.queries.input_csv`, renders
+  prompts from `llm.queries.prompt_template_file`, sends them through
+  `ai_bias_search/providers/openrouter.py`, and writes raw JSONL outputs.
+- Optional `llm.mode: scenarios` uses `llm.controlled_bias_probes.input_file` for paired,
+  hand-authored bias probes.
+- `llm-normalize` parses raw outputs into typed recommendation/ranking records.
+- `llm-eval` optionally enriches recommended articles via OpenAlex and computes
+  LLM-specific bias, divergence, hallucination, and stability metrics.
+- `llm-report` renders the shared HTML report from one run directory, with LLM-specific sections when present.
+
+Outputs:
+- `runs/llm/<timestamp>/raw_responses.jsonl`
+- `runs/llm/<timestamp>/normalized_responses.jsonl`
+- `runs/llm/<timestamp>/enriched_recommendations.jsonl`
+- `runs/llm/<timestamp>/metrics.json`
+- `runs/llm/<timestamp>/report.html`
+- `runs/llm/<timestamp>/manifest.json`
+
 ### 2) Enrich
 
 Entry point:
