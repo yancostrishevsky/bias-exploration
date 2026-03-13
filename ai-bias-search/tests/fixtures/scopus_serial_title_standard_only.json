@@ -1,0 +1,15 @@
+{
+  "serial-metadata-response": {
+    "entry": {
+      "dc:title": "Journal of Fallback",
+      "SJRList": {"SJR": {"@year": "2022", "$": "0.41"}},
+      "SNIPList": {"SNIP": {"@year": "2022", "$": "0.88"}},
+      "citeScoreYearInfoList": {
+        "citeScoreYearInfo": {
+          "citeScoreCurrentMetric": "2.2",
+          "citeScoreCurrentMetricYear": "2022"
+        }
+      }
+    }
+  }
+}

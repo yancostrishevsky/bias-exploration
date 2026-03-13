@@ -1,0 +1,55 @@
+# Scopus enrichment configuration (snippet).
+#
+# This file is not loaded automatically; copy the `scopus:` block into your main `config.yaml`.
+# Secrets are read from environment variables (see README):
+# - `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`)
+# - optional `SCOPUS_INSTTOKEN` (or legacy `SCOPUS_INST_TOKEN`)
+scopus:
+  enabled: true
+  fail_open: true
+  base_url: "https://api.elsevier.com"
+  timeout: 20
+  rps: 1
+  burst: 2
+  max_retries: 3
+  max_records_per_query: 100
+  page_size: 25
+
+  # Search API defaults (connector + DOI fallback search in enrichment).
+  search_view: "STANDARD"
+  search_sort: null
+  search_fields: null
+
+  cache_ttl_days: 7
+  overwrite_existing: false
+
+  # Optional lookup fallback (may increase costs).
+  title_search_enabled: false
+  title_search_min_len: 32
+
+  # Abstract Retrieval API view (e.g., BASIC / FULL / COMPLETE).
+  abstract_view: "FULL"
+  abstract_fields: null
+  # Ordered fallback sequence when FULL/BASIC returns 401/403.
+  abstract_fallback_views: ["META", null]
+  # Minimal field set for entitlement-safe fallback.
+  abstract_fields_minimal: "dc:title,prism:doi,prism:publicationName,prism:issn,prism:coverDate,citedby-count,openaccessFlag,subtype,subtypeDescription,affiliation-country,affilname"
+
+  # Optional endpoints (may require additional entitlements).
+  enable_citation_overview: false
+  citation_overview_exclude_self: true
+  enable_serial_title_metrics: false
+  serial_title_view: "STANDARD"
+  enable_plumx: false
+
+  # Optional: dedicated Scopus journal rankings enrichment.
+  rankings:
+    enabled: true
+    api_key: SCOPUS_API_KEY
+    insttoken: null
+    base_url: "https://api.elsevier.com"
+    view_preference: ["ENHANCED", "STANDARD"]
+    timeout_s: 30
+    cache_ttl_days: 30
+    rate_limit: 1.0
+    fail_open: true

@@ -28,9 +28,9 @@ The project supports **reproducible retrieval experiments** by:
 ### High-level system design
 The pipeline is modular:
 - **Connectors** isolate platform-specific API logic behind a shared interface.
-- **Enrichment** normalizes identifiers and attaches OpenAlex metadata, optional CORE conference ranks, and optional journal impact-factor data.
+- **Enrichment** normalizes identifiers and attaches OpenAlex metadata, optional Scopus metadata, and optional venue rankings (CORE/JIF).
 - **Evaluation** computes overlap/ranking similarity and bias-oriented summaries from the enriched dataset.
-- **Reporting** renders a static HTML report embedding plots as base64 PNGs.
+- **Reporting** renders a self-contained HTML report with interactive client-side charts and filters.
 
 ---
 
@@ -115,25 +115,64 @@ Connectors are registered in a static mapping:
 - User-Agent:
   - configurable via `AI_BIAS_USER_AGENT` (default `ai-bias-search/0.1 (+contact@example.com)`).
 
-#### `core` — CORE v3 works search
+#### `core` — CORE works search
 - Implementation: `ai_bias_search/connectors/core.py`
-- Status: implemented; designed to be resilient to API variants and partial failures.
+- Status: implemented; canonical CORE v3 GET search path.
 - Requires:
   - `CORE_API_KEY` (connector fails fast if missing).
 - Key environment variables (all optional unless noted):
-  - `CORE_API_BASE_URL` (default `https://api.core.ac.uk/v3`)
-  - `CORE_SEARCH_PATH` (default `/search/works`)
-  - `CORE_SEARCH_METHOD` (`AUTO`, `GET`, or `POST`; default `AUTO`)
-  - `CORE_QUERY_PARAM`, `CORE_LIMIT_PARAM`, `CORE_OFFSET_PARAM`
+  - `CORE_API_BASE_URL` (default `https://api.core.ac.uk`)
   - `CORE_MAX_PAGE_SIZE` (default `25`)
-  - `CORE_AUTH_HEADER` (default `Authorization`)
-  - `CORE_AUTH_PREFIX` (default `Bearer`)
   - `AI_BIAS_USER_AGENT` (default `ai-bias-search/0.1 (+contact@example.com)`)
 - Pagination:
   - uses `limit`/`offset` style paging and de-duplicates within a query run.
 - Error handling:
   - retries transient HTTP failures (timeouts, 429/5xx, etc.) and certain 200-OK payloads that still indicate backend overload.
+  - uses `GET /v3/search/works` with query params `q`, `limit`, `offset`, `scroll=false`, `stats=false`.
   - returns partial results when later pages fail, rather than failing the whole run.
+
+#### `scopus` — Elsevier Scopus Search API
+- Implementation: `ai_bias_search/connectors/scopus.py`
+- Endpoint: `GET https://api.elsevier.com/content/search/scopus`
+- Authentication:
+  - requires `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`) via `X-ELS-APIKey`
+  - optional `SCOPUS_INSTTOKEN` (`X-ELS-Insttoken`) for institutional/service-level access
+- Pagination:
+  - uses `start`/`count` (count bounded to `<=100`)
+  - supports deterministic max-per-query limits (`scopus.max_records_per_query`)
+- Mapping:
+  - extracts `scopus_id`, `eid`, `doi`, `title`, `creator`, `publicationName`,
+    `issn`/`eIssn`, `coverDate`, `citedby-count`, `openaccessFlag`, `source-id`
+  - stores raw entry payload under `extra.scopus.raw` for reproducibility/debugging
+- Request tracing:
+  - logs Elsevier request/transaction IDs when present in response headers
+  - never logs API key or institutional token values
+
+### Separate LLM Pipeline (`llm-*` commands)
+LLM benchmarking is intentionally separated from the scholarly connector pipeline.
+
+- Implementation:
+  - `ai_bias_search/llm/`
+  - `ai_bias_search/providers/openrouter.py`
+- Entry points:
+  - `llm collect` / `llm-collect` → read `queries.csv`, render prompts from a reusable template, and store raw JSONL
+  - `llm-normalize` → parse raw outputs into typed recommendation/ranking records
+  - `llm-eval` → optionally enrich recommendations with OpenAlex and compute bias metrics
+  - `llm-report` → render the shared interactive HTML report for one run, with LLM sections
+  - `llm-run` / `llm-pipeline` → full end-to-end LLM workflow
+- Default workflow:
+  - query-driven literature retrieval benchmark from `llm.queries.input_csv`
+  - prompt generation from `llm.queries.prompt_template_file`
+  - optional secondary `controlled_bias_probes` mode for hand-authored paired scenarios
+- Data separation:
+  - `runs/llm/<timestamp>/raw_responses.jsonl`
+  - `runs/llm/<timestamp>/normalized_responses.jsonl`
+  - `runs/llm/<timestamp>/enriched_recommendations.jsonl`
+  - `runs/llm/<timestamp>/metrics.json`
+  - `runs/llm/<timestamp>/report.html`
+  - `runs/llm/<timestamp>/manifest.json`
+- Provenance:
+  - every run stores the effective config snapshot and can optionally save per-call request/response payloads under `runs/llm/<timestamp>/payloads/`.
 
 ### Placeholder connectors (scaffolding)
 These connectors exist as explicit placeholders and raise `ConnectorError`:
@@ -159,17 +198,22 @@ The enrichment layer normalizes records across platforms and attaches metadata n
   - 404/410 are treated as non-retryable in DOI-direct resolution.
   - 429/5xx and network timeouts are treated as retryable (tenacity exponential backoff).
 
-### Venue normalization and CORE conference rankings
-- CORE ranking lookup: `ai_bias_search/utils/core_rankings.py`
-  - default file: `CORE.csv` at repo root (gitignored; you must provide it)
-  - override: `CORE_RANKINGS_PATH=/path/to/CORE.csv`
-  - output field: `core_rank` in `{A*, A, B, C}` or `None`
-- Enrichment uses OpenAlex venue fields plus heuristics to extract a conference acronym where possible (e.g., from Semantic Scholar DBLP hints) and filters out obvious false positives (e.g., Roman numerals).
+### Rankings enrichment (CORE + JIF; config-driven)
+- Implementation: `ai_bias_search/rankings/` + integration in `ai_bias_search/normalization/openalex_enrich.py`
+- Configs: `ai_bias_search/rankings/sources/*.yaml` (dataset path + field mappings + normalization)
+- CORE dataset default: `ai_bias_search/rankings/datasets/core.csv` (override via `CORE_RANKINGS_PATH`)
+- Matching strategy: ISSN exact → normalized title exact → fuzzy title (deterministic)
+- Cache backend: `diskcache.Cache` stored in `data/cache/rankings/<ranking_id>/`
+- Output:
+  - `rankings` (per-ranking match results: `matched`, `value`, `method`, `score`, `evidence`)
+  - compatibility fields preserved:
+    - `core_rank` / `is_core_listed` (from `rankings["core"]`)
+    - `impact_factor` + `jcr_*` fields (from `rankings["jif"]` when enabled)
+- Adding a new ranking list requires only a dataset file + YAML config under `ai_bias_search/rankings/sources/` (no code changes).
 
-### Journal impact factor enrichment (optional)
-- Implementation: `ai_bias_search/utils/impact_factor.py` + integration in `openalex_enrich.py`
-- Controlled by YAML `impact_factor.enabled`.
-- Input is an XLSX file (default `data/vendor/jif.xlsx`; gitignored), parsed with `openpyxl`.
+### Journal impact factor enrichment (optional; via rankings `jif`)
+- Controlled by YAML `impact_factor.enabled` (kept for backward compatibility).
+- Input is an XLSX file (default `data/vendor/jif.xlsx`; user-provided), parsed with `openpyxl`.
 - Matching strategy (in order):
   1) ISSN/eISSN exact match (if present)
   2) normalized title exact match
@@ -177,6 +221,75 @@ The enrichment layer normalizes records across platforms and attaches metadata n
 - Enriched fields include:
   - `impact_factor`, `impact_factor_year`, `impact_factor_match`
   - and additional `jcr_*` fields (publisher, quartile, JCI, etc.) when present in the XLSX.
+
+### Scopus enrichment (optional; OFF by default)
+- Implementation: `ai_bias_search/enrichment/scopus.py` (re-exported from `ai_bias_search/normalization/scopus_enrich.py`)
+- Configuration:
+  - preferred block: `scopus:`
+  - legacy alias: `scopus_enrich:` (still supported)
+  - enable/disable: `scopus.enabled`
+  - failure mode: `scopus.fail_open` (`true` = best effort, `false` = fail-fast; env override: `SCOPUS_FAIL_OPEN`)
+- Requires (only when enabled):
+  - `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`)
+  - optional `SCOPUS_INSTTOKEN` (or legacy `SCOPUS_INST_TOKEN`)
+- Cache backend: `diskcache.Cache` stored in `data/cache/scopus/` (hits + misses; default 7-day TTL).
+- Non-destructive merge by default:
+  - fills only missing fields (does not overwrite non-null OpenAlex values unless `scopus.overwrite_existing: true`).
+- Fields filled when present in Scopus responses:
+  - `scopus_id`, `issn`, `eissn`, `publication_year`, `cited_by_count`, `authors`
+  - bias-oriented fields: `is_open_access`/`is_oa`, `doc_type`, `journal_title`, `source_id`,
+    `issn_list`, `affiliation_countries`, `affiliation_institutions`, `affiliation_cities`,
+    `author_ids`, `author_count`
+  - fallback diagnostics: `scopus_enrich_view_used`, `scopus_enrich_field_used`,
+    `scopus_enrich_downgraded`
+  - structured payloads under `scopus` + merge diagnostics under `scopus_meta`
+  - `extra.scopus_enrich` (compact payload: abstract/keywords/subtype/affiliation metadata)
+- Identifier strategy:
+  - `scopus_id` (if present) -> Abstract Retrieval
+  - DOI -> Abstract Retrieval by DOI
+  - DOI fallback -> Search `DOI(<doi>)` -> resolved `scopus_id` -> Abstract Retrieval
+- Abstract Retrieval fallback strategy:
+  - first request uses configured `SCOPUS_ABSTRACT_VIEW` (default `FULL`)
+  - on `401/403`: retries deterministic fallback views from `SCOPUS_ABSTRACT_FALLBACK_VIEWS` (default `META,None`)
+  - if still `401/403`: retries with `SCOPUS_ABSTRACT_FIELDS_MINIMAL` (field-limited payload), including fallback views
+- Request options:
+  - Search defaults: `SCOPUS_SEARCH_VIEW`, `SCOPUS_SEARCH_FIELDS`
+  - Abstract defaults: `SCOPUS_ABSTRACT_VIEW`, `SCOPUS_ABSTRACT_FIELDS`
+  - Abstract fallback controls: `SCOPUS_ABSTRACT_FALLBACK_VIEWS`, `SCOPUS_ABSTRACT_FIELDS_MINIMAL`
+
+### Scopus journal rankings enrichment (optional)
+- Implementation: `ai_bias_search/enrichment/scopus_rankings.py`
+- Enabled by:
+  - YAML: `scopus.rankings.enabled: true`, or
+  - CLI: `enrich --enrich-scopus-rankings`
+- Uses Scopus Serial Title API by ISSN:
+  - `GET /content/serial/title/issn/{issn}`
+  - view fallback: `ENHANCED` -> `STANDARD`
+- Writes to:
+  - `rankings.scopus.citescore` (`value`, `year`)
+  - `rankings.scopus.citescore_tracker` (`value`, `year`)
+  - `rankings.scopus.sjr` (`value`, `year`)
+  - `rankings.scopus.snip` (`value`, `year`)
+  - `rankings.scopus.series` (`citescore`, `sjr`, `snip` yearly series)
+  - `rankings.scopus.source_issn_used`
+  - `rankings.scopus.retrieved_at`
+- Behavior:
+  - prefers print ISSN, then falls back to other ISSN candidates (including eISSN)
+  - missing metrics are stored as `None` (no exception in fail-open mode)
+  - responses are cached in `data/cache/scopus_rankings/`
+- Limitation:
+  - availability of ENHANCED fields depends on Elsevier entitlement/service level.
+
+#### Troubleshooting 401/403 (Scopus)
+- `401 Unauthorized`:
+  - verify `SCOPUS_API_KEY`/`ELSEVIER_API_KEY` is set and sent as `X-ELS-APIKey`
+  - for institutional entitlement models, set `SCOPUS_INSTTOKEN` and ensure requests run from entitled IP/VPN
+  - `view=FULL` can be restricted; rely on fallback (`META`, no `view`, and minimal `field=` payload)
+  - check with Elsevier support that your key has required service-level entitlement
+- `403 Forbidden`:
+  - usually means missing entitlement for the requested endpoint/view/field
+  - verify institutional IP/VPN context, InstToken requirements, and subscription/API entitlement scope
+  - check response trace IDs (`x-els-reqid`, `x-els-transid`) in logs when contacting support
 
 ---
 
@@ -200,8 +313,29 @@ Computed in `ai_bias_search.evaluation.biases.compute_bias_metrics`:
 - **CORE ranking**: shares of A*/A/B/C for eligible records (conference or missing venue type).
 - **Publisher concentration**: Herfindahl–Hirschman Index (HHI) over publishers.
 - **Rank vs citations**: Spearman correlation between `rank` and `cited_by_count`.
+- **Feature availability**: per-feature coverage for OA/country/citations/doc_type/ISSN.
+- **Top-K bias suite** (`K = 10, 20, 50`):
+  - OA share in Top-K vs overall share,
+  - country distribution shift (Jensen-Shannon divergence) + overrepresentation ratio,
+  - citation bias (Spearman + median citations Top-K vs rest),
+  - journal/ISSN diversity concentration in Top-K,
+  - doc-type distribution shift in Top-K vs overall.
 
 Metrics are computed “overall” and additionally “by_platform” when the `platform` column is present.
+When required fields are missing, Top-K metrics are marked as unavailable and include missingness ratios.
+Top-K blocks also include per-feature reliability labels (`high`/`medium`/`low`) and minimum sample-size gates.
+
+### Data semantics and reliability safeguards
+- Canonical normalization lives in `ai_bias_search.normalize.records` and enforces stable fields:
+  - `issn` as normalized `####-####` list,
+  - `publisher` as nullable text,
+  - `citations` as `Optional[int]` (unknown is `None`, never defaulted to `0`).
+- Scopus citation parsing only accepts explicit cited-by fields (`citedby-count` variants). If missing, citations stay `None`.
+- Suspicious citation patterns are detected per platform (e.g., dominant zero-citation profiles on older records), tagged in `metrics_quality.citations`, and excluded from citation statistics by setting suspicious zeros to `None`.
+- Cross-platform citation values are not interpreted on one shared scale:
+  - overall output marks `citations_not_cross_platform_comparable: true`,
+  - citation rank-correlation/top-k metrics are reported per platform.
+- Reliability gating avoids unstable deltas when available top-k samples are too small.
 
 ---
 
@@ -224,7 +358,85 @@ retries:
   backoff: 1.5
 ```
 
-See `configs/config.yaml.example` for the full template (including `impact_factor`).
+See `configs/config.yaml.example` for the full template (including `impact_factor` and `diagnostics`).
+
+Optional Scopus block:
+```yaml
+scopus:
+  enabled: true
+  fail_open: true
+  base_url: "https://api.elsevier.com"
+  timeout: 20
+  rps: 1
+  burst: 2
+  max_retries: 3
+  search_view: "STANDARD"
+  abstract_view: "FULL"
+  abstract_fallback_views: ["META", null]
+  abstract_fields_minimal: "dc:title,prism:doi,prism:publicationName,prism:issn,prism:coverDate,citedby-count,openaccessFlag,subtype,subtypeDescription,affiliation-country,affilname"
+  rankings:
+    enabled: false
+    api_key: null
+    insttoken: null
+    view_preference: ["ENHANCED", "STANDARD"]
+    timeout_s: 30
+    cache_ttl_days: 30
+    rate_limit: 1.0
+```
+
+Optional `llm` block:
+```yaml
+llm:
+  enabled: true
+  provider: openrouter
+  mode: query_csv
+  models:
+    - openai/gpt-4o-mini
+    - anthropic/claude-3.5-sonnet
+    - google/gemini-2.0-flash-001
+  generation:
+    temperature: 0.1
+    max_tokens: 1500
+    top_p: 1.0
+    timeout_seconds: 60
+    repeats_per_query: 2
+    top_k_articles: 10
+  queries:
+    input_csv: queries/queries.csv
+    prompt_template_file: prompts/article_retrieval.txt
+  controlled_bias_probes:
+    input_file: configs/llm_scenarios.example.yaml
+  output_dir: runs/llm
+  parsing:
+    require_json: true
+  enrichment:
+    enabled: true
+  save_payloads: true
+```
+
+Optional diagnostics capture block:
+```yaml
+diagnostics:
+  enabled: true
+  capture_samples: true
+  capture_requests: true
+  max_sample_records: 2
+  max_enrich_trace_entries: 5
+  max_request_logs: 20
+  redact_fields: ["apiKey", "insttoken", "Authorization", "X-ELS-APIKey"]
+```
+
+When diagnostics are enabled, `results/diagnostics.json` includes sampled:
+- raw payload snippets,
+- canonical normalized records,
+- mapping attempts (`publisher`/`issn`/`citations`/`doi`), and
+- per-record enrichment trace (`strategy`, status, result counts, notes).
+
+It also includes `platform_capabilities` flags such as `citations_available` and
+`citations_reason` so citation-based metrics can be explicitly disabled when a source
+is structurally unreliable (for example CORE returning all-zero `citationCount`).
+
+Sensitive values are redacted by key and request URLs are stored without query strings.
 
 ### Query file format
 `queries_file` is read with `csv.DictReader` and must include a header row. The pipeline uses:
@@ -242,10 +454,22 @@ Environment variables are loaded from `.env` at runtime (`python-dotenv`). See `
 
 Common variables:
 - `LOG_LEVEL` (default `INFO`)
+- `OPENROUTER_API_KEY` (required for the separate LLM audit pipeline)
 - `SEMANTIC_SCHOLAR_API_KEY`
 - `CORE_API_KEY`
-- `CORE_RANKINGS_PATH` (default `CORE.csv`)
-- `CORE_SEARCH_METHOD` (`AUTO`/`GET`/`POST`, default `AUTO`)
+- `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`, when `scopus.enabled: true`)
+- `SCOPUS_INSTTOKEN` (optional; institutional Scopus token; legacy `SCOPUS_INST_TOKEN` supported)
+- `SCOPUS_BASE_URL` (default `https://api.elsevier.com`)
+- `SCOPUS_TIMEOUT`, `SCOPUS_RPS`, `SCOPUS_MAX_RETRIES`, `SCOPUS_FAIL_OPEN`
+- `SCOPUS_SEARCH_VIEW`, `SCOPUS_ABSTRACT_VIEW`
+- `SCOPUS_SEARCH_FIELDS`, `SCOPUS_ABSTRACT_FIELDS`
+- `SCOPUS_ABSTRACT_FALLBACK_VIEWS` (default `META,None`)
+- `SCOPUS_ABSTRACT_FIELDS_MINIMAL` (entitlement-safe minimal field set)
+- `SCOPUS_RANKINGS_API_KEY`, `SCOPUS_RANKINGS_INSTTOKEN` (optional overrides)
+- `SCOPUS_RANKINGS_VIEW_PREFERENCE` (default `ENHANCED,STANDARD`)
+- `SCOPUS_RANKINGS_TIMEOUT_S`, `SCOPUS_RANKINGS_CACHE_TTL_DAYS`, `SCOPUS_RANKINGS_RPS`
+- `CORE_RANKINGS_PATH` (optional; override CORE rankings dataset path)
+- `CORE_API_BASE_URL` (default `https://api.core.ac.uk`)
 - `AI_BIAS_USER_AGENT` (used by `core` and `semanticscholar`)
 
 ---
@@ -257,9 +481,20 @@ The CLI is implemented with Typer in `ai_bias_search/cli.py`. The package also i
 
 ### Available commands
 - `collect --config <path>`: fetch raw results and write JSONL snapshots under `data/raw/`
-- `enrich --config <path> [--run-timestamp <collect_ts>]`: enrich latest/specified raw snapshots and write Parquet under `data/enriched/`
+- `enrich --config <path> [--run-timestamp <collect_ts>] [--enrich-scopus-rankings]`: enrich latest/specified raw snapshots and write Parquet under `data/enriched/`
 - `eval --config <path> [--run-timestamp <enriched_ts>]`: compute metrics from latest/specified Parquet and write JSON under `results/metrics/`
 - `report --config <path> [--enriched-timestamp <enriched_ts>]`: generate HTML under `results/reports/`
+- `llm collect --config <path> [--run-id <id>]`: query-driven LLM retrieval benchmark collect stage
+- `llm normalize --config <path> [--run-id <id>]`: normalize raw LLM outputs for a run
+- `llm eval --config <path> [--run-id <id>]`: enrich normalized recommendations and compute LLM bias metrics
+- `llm report --config <path> [--run-id <id>]`: generate the dedicated LLM HTML report
+- `llm run --config <path>`: run `llm collect` → `llm normalize` → `llm eval` → `llm report`
+- `llm-collect --config <path> [--run-id <id>]`: create a new LLM audit run and store raw outputs under `runs/llm/<run_id>/`
+- `llm-normalize --config <path> [--run-id <id>]`: normalize raw LLM outputs for a run
+- `llm-eval --config <path> [--run-id <id>]`: enrich normalized recommendations and compute LLM bias metrics
+- `llm-report --config <path> [--run-id <id>]`: generate the dedicated LLM HTML report
+- `llm-run --config <path>`: run `llm-collect` → `llm-normalize` → `llm-eval` → `llm-report`
+- `llm-pipeline --config <path>`: backward-compatible alias for `llm-run`
 
 Notes:
 - `report` always loads the **latest metrics JSON** present in `results/metrics/`. The CLI option `--metrics-timestamp` is currently accepted but not used by the implementation.
@@ -277,10 +512,33 @@ python -m ai_bias_search.cli eval    --config config.yaml
 python -m ai_bias_search.cli report  --config config.yaml
 ```
 
+Scopus-focused example (connector + enrichment enabled in YAML):
+```bash
+python -m ai_bias_search.cli collect --config config.yaml
+python -m ai_bias_search.cli enrich  --config config.yaml
+python -m ai_bias_search.cli eval    --config config.yaml
+python -m ai_bias_search.cli report  --config config.yaml
+```
+
+LLM pipeline example (OpenRouter backend configured in `llm`):
+```bash
+python -m ai_bias_search.cli llm collect --config config.yaml
+python -m ai_bias_search.cli llm normalize --config config.yaml
+python -m ai_bias_search.cli llm eval --config config.yaml
+python -m ai_bias_search.cli llm report --config config.yaml
+```
+
+Query-driven inputs:
+- `queries/llm_queries.example.csv`: example benchmark query list
+- `prompts/article_retrieval.txt`: reusable prompt template for literature retrieval
+- `configs/llm_scenarios.example.yaml`: optional secondary probe dataset for controlled bias comparisons
+
 Task runner shortcuts:
 ```bash
 just setup
 just pipeline
+just llm-run
+just llm-pipeline
 ```
 
 Docker:
@@ -300,10 +558,20 @@ docker compose run --rm ai-bias-search just pipeline CONFIG=/app/config.yaml
   - `data/enriched/<timestamp>.parquet`
 - Metrics JSON:
   - `results/metrics/<timestamp>.json`
+- Diagnostics JSON:
+  - `results/diagnostics.json`
+- Request diagnostics log (rolling per platform):
+  - `results/request_logs.json`
 - HTML report:
   - `results/reports/<timestamp>.html`
 - OpenAlex enrichment cache:
   - `data/cache/openalex/`
+- Scopus enrichment cache:
+  - `data/cache/scopus/`
+- Scopus rankings cache:
+  - `data/cache/scopus_rankings/`
+- Rankings match cache:
+  - `data/cache/rankings/`
 
 Timestamps are UTC in the format `%Y%m%dT%H%M%SZ` (see `ai_bias_search.utils.io.utc_timestamp`).
 

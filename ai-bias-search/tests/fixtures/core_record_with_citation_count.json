@@ -1,0 +1,14 @@
+{
+  "platform": "core",
+  "title": "CORE paper",
+  "rank": 1,
+  "citations": null,
+  "cited_by_count": null,
+  "extra": {
+    "core": {
+      "id": "core:1",
+      "title": "CORE paper",
+      "citationCount": 7
+    }
+  }
+}

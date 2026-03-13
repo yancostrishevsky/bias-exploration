@@ -1,0 +1,20 @@
+{
+  "entry": {
+    "SJRList": [
+      {"@year": "2020", "$": "0.12"},
+      {"@year": "2021", "$": "0.22"}
+    ],
+    "SNIPList": [
+      {"@year": "2020", "$": "0.50"},
+      {"@year": "2021", "$": "0.73"}
+    ],
+    "citeScoreYearInfoList": [
+      {
+        "citeScoreCurrentMetricYear": "2021",
+        "citeScoreCurrentMetric": "1.1",
+        "citeScoreTrackerYear": "2022",
+        "citeScoreTracker": "1.3"
+      }
+    ]
+  }
+}

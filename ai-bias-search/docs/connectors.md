@@ -47,8 +47,19 @@ Instantiation injects:
 - Purpose: scholarly search via CORE v3.
 - Notes:
   - requires `CORE_API_KEY`.
-  - is explicitly configurable via environment variables (base URL, auth header, paging params, GET vs POST).
+  - uses canonical endpoint `GET https://api.core.ac.uk/v3/search/works`.
+  - sends query params `q`, `limit`, `offset`, `scroll=false`, `stats=false`.
+  - normalizes base URL/path joining to avoid duplicated `/v3/v3`.
   - uses retries for transient failures and returns partial results when later pages fail.
+
+### Scopus (`scopus`)
+- File: `ai_bias_search/connectors/scopus.py`
+- Purpose: Elsevier Scopus Search API connector with start/count pagination.
+- Notes:
+  - requires `SCOPUS_API_KEY` (or `ELSEVIER_API_KEY`).
+  - supports optional `SCOPUS_INSTTOKEN` for institutional access contexts.
+  - maps Scopus-specific fields (`scopus_id`, `eid`, ISSN/eISSN, cited-by, OA flag) and preserves raw payload in `extra.scopus.raw`.
+  - logs request/transaction IDs when returned by Elsevier, without logging secret headers.
 
 ### Placeholders (`perplexity`, `consensus`, `scite`)
 - Files:
@@ -68,4 +79,3 @@ Instantiation injects:
    - `Record(title=..., doi=..., rank=..., extra={"<connector>": raw_payload}).model_dump()`
 4. Register in `CONNECTOR_REGISTRY`.
 5. Add a unit test using `httpx.MockTransport` to avoid network calls (see `tests/test_core_connector.py` and `tests/test_cli_collect.py`).
-

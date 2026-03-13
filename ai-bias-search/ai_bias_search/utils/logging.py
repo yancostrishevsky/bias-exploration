@@ -6,7 +6,16 @@ import logging
 import os
 from typing import Any, Mapping
 
-SENSITIVE_KEYS = {"authorization", "api-key", "api_key", "apikey"}
+SENSITIVE_KEYS = {
+    "authorization",
+    "api-key",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "x-els-apikey",
+    "x-els-insttoken",
+    "insttoken",
+}
 
 
 def configure_logging(level: str | None = None) -> logging.Logger:

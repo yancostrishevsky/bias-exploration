@@ -1,0 +1,16 @@
+{
+  "platform": "scopus",
+  "title": "Scopus Zero Citations",
+  "rank": 1,
+  "citedby-count": "0",
+  "year": 2020,
+  "extra": {
+    "scopus": {
+      "raw": {
+        "prism:issn": "12345679",
+        "publishername": "Elsevier",
+        "prism:publicationName": "Scopus Journal"
+      }
+    }
+  }
+}

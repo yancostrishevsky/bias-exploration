@@ -3,21 +3,30 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import unquote
 from typing import Mapping, Optional
 
 DOI_REGEX = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+_DOI_PREFIX_RE = re.compile(r"^(?:doi:|https?://(?:dx\.)?doi\.org/)", re.IGNORECASE)
 
 
 def normalise_doi(value: Optional[str]) -> Optional[str]:
     """Return a normalised DOI or *None* if the input is invalid."""
 
-    if not value:
+    if value is None:
         return None
-    doi = value.strip().lower()
-    if doi.startswith("doi:"):
-        doi = doi[4:]
-    if DOI_REGEX.fullmatch(doi):
-        return doi
+    doi = unquote(str(value)).strip().lower()
+    if not doi:
+        return None
+    doi = _DOI_PREFIX_RE.sub("", doi)
+    doi = re.sub(r"\s+", "", doi)
+    doi = doi.strip(" \t\r\n.;,")
+    match = DOI_REGEX.search(doi)
+    if not match:
+        return None
+    candidate = match.group(0).rstrip(".,;")
+    if DOI_REGEX.fullmatch(candidate):
+        return candidate
     return None
 
 

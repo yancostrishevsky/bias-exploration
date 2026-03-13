@@ -1,0 +1,14 @@
+{
+  "platform": "scopus",
+  "title": "Scopus Missing Citations",
+  "rank": 1,
+  "extra": {
+    "scopus": {
+      "raw": {
+        "prism:issn": "1234-5678",
+        "publishername": "Elsevier",
+        "prism:publicationName": "Scopus Journal"
+      }
+    }
+  }
+}

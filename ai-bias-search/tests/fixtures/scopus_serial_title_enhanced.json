@@ -1,0 +1,38 @@
+{
+  "serial-metadata-response": {
+    "entry": [
+      {
+        "dc:title": "Journal of Testing",
+        "SJRList": {
+          "SJR": [
+            {"@year": "2021", "$": "0.55"},
+            {"@year": "2022", "$": "0.61"},
+            {"@year": "2023", "$": "0.72"}
+          ]
+        },
+        "SNIPList": {
+          "SNIP": [
+            {"@year": "2022", "$": "1.11"},
+            {"@year": "2023", "$": "1.24"}
+          ]
+        },
+        "citeScoreYearInfoList": {
+          "citeScoreYearInfo": [
+            {
+              "citeScoreCurrentMetric": "4.2",
+              "citeScoreCurrentMetricYear": "2023",
+              "citeScoreTracker": "4.8",
+              "citeScoreTrackerYear": "2024"
+            },
+            {
+              "citeScoreCurrentMetric": "3.9",
+              "citeScoreCurrentMetricYear": "2022",
+              "citeScoreTracker": "4.0",
+              "citeScoreTrackerYear": "2023"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

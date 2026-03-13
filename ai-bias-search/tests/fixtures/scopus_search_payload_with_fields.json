@@ -1,0 +1,15 @@
+{
+  "search-results": {
+    "opensearch:totalResults": "1",
+    "entry": [
+      {
+        "dc:identifier": "SCOPUS_ID:85012345678",
+        "eid": "2-s2.0-85012345678",
+        "prism:doi": "10.1234/example",
+        "prism:publicationName": "Journal of Testing",
+        "prism:issn": "12345678",
+        "citedby-count": "7"
+      }
+    ]
+  }
+}

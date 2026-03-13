@@ -1,0 +1,21 @@
+{
+  "search-results": {
+    "opensearch:totalResults": "3",
+    "entry": [
+      {
+        "dc:identifier": "SCOPUS_ID:85012345680",
+        "eid": "2-s2.0-85012345680",
+        "prism:doi": "10.1234/example.three",
+        "dc:title": "Third Scopus Paper",
+        "dc:creator": "Smith, Alex",
+        "prism:publicationName": "Conference on Testing",
+        "prism:issn": "11223344",
+        "prism:eIssn": "44332211",
+        "prism:coverDate": "2019-06-01",
+        "citedby-count": "2",
+        "openaccessFlag": "0",
+        "source-id": "67890"
+      }
+    ]
+  }
+}

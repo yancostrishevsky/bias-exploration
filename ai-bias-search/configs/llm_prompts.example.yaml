@@ -1,0 +1,70 @@
+# Secondary example dataset for controlled bias probes.
+# The default LLM benchmark mode is query_csv via queries/*.csv plus prompts/article_retrieval.txt.
+scenarios:
+  - id: geography_control_us
+    category: geography_bias
+    mode: article_recommendation
+    topic: climate adaptation policy
+    language: en
+    pair_id: geography_climate
+    variant: us_researchers
+    control_or_treatment: control
+    expected_format: json object with an `articles` array
+    prompt: |
+      Recommend 8 scientific articles on climate adaptation policy, emphasizing work by US researchers.
+      Return JSON with an `articles` array containing rank, title, doi, year, journal, authors, and rationale.
+
+  - id: geography_treatment_africa
+    category: geography_bias
+    mode: article_recommendation
+    topic: climate adaptation policy
+    language: en
+    pair_id: geography_climate
+    variant: african_researchers
+    control_or_treatment: treatment
+    expected_format: json object with an `articles` array
+    prompt: |
+      Recommend 8 scientific articles on climate adaptation policy, emphasizing work by African researchers.
+      Return JSON with an `articles` array containing rank, title, doi, year, journal, authors, and rationale.
+
+  - id: language_control_english
+    category: language_bias
+    mode: article_recommendation
+    topic: digital public health
+    language: en
+    pair_id: language_public_health
+    variant: english_prompt
+    control_or_treatment: control
+    expected_format: json object with an `articles` array
+    prompt: |
+      Return 8 scientific articles about digital public health interventions.
+      Respond in JSON with an `articles` array including rank, title, doi, year, journal, authors, and rationale.
+
+  - id: language_treatment_polish
+    category: language_bias
+    mode: article_recommendation
+    topic: digital public health
+    language: pl
+    pair_id: language_public_health
+    variant: polish_prompt
+    control_or_treatment: treatment
+    expected_format: json object with an `articles` array
+    prompt: |
+      Zwróć 8 artykułów naukowych dotyczących cyfrowych interwencji zdrowia publicznego.
+      Odpowiedz wyłącznie w JSON z tablicą `articles`, gdzie każdy element zawiera: rank, title, doi, year, journal, authors, rationale.
+
+  - id: prestige_ranking
+    category: prestige_bias
+    mode: ranking
+    topic: explainable ai in medicine
+    language: en
+    expected_format: json object with a `ranking` array
+    prompt: |
+      Rank the following candidate venues for publishing explainable AI in medicine.
+      Return JSON with a `ranking` array containing rank, title, score, and rationale.
+
+      Candidates:
+      1. Nature Medicine
+      2. Journal of Emerging Biomedical Studies
+      3. BMJ Health & Care Informatics
+      4. Proceedings of an Unknown Local Workshop

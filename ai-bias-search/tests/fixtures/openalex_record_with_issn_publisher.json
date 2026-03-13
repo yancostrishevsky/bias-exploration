@@ -1,0 +1,27 @@
+{
+  "platform": "openalex",
+  "title": "OpenAlex Paper",
+  "rank": 1,
+  "doi": "10.1000/example",
+  "extra": {
+    "openalex": {
+      "host_venue": {
+        "display_name": "Journal of Testing",
+        "publisher": "Host Publisher",
+        "issn": ["1234-5679"]
+      },
+      "primary_location": {
+        "source": {
+          "id": "https://openalex.org/S123",
+          "display_name": "Journal of Testing",
+          "host_organization_name": "ACM",
+          "host_organization_lineage_names": ["Wiley", "ACM"],
+          "publisher": "ACM",
+          "issn": ["1234-5679", "8765-4321"]
+        }
+      },
+      "cited_by_count": 12,
+      "open_access": {"is_oa": true}
+    }
+  }
+}

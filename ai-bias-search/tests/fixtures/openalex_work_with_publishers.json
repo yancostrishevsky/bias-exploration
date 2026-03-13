@@ -1,0 +1,23 @@
+{
+  "id": "https://openalex.org/W123",
+  "language": "en",
+  "open_access": {
+    "is_oa": true
+  },
+  "publication_year": 2023,
+  "primary_location": {
+    "source": {
+      "display_name": "ACM Conference on Computer and Communications Security",
+      "type": "conference",
+      "publisher": "ACM",
+      "is_core": true,
+      "abbreviated_title": "CCS"
+    },
+    "raw_source_name": "ACM CCS"
+  },
+  "host_venue": {
+    "display_name": "Fallback Venue",
+    "publisher": "Fallback Publisher"
+  },
+  "cited_by_count": 42
+}

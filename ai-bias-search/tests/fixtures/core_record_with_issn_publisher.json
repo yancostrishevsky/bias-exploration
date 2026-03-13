@@ -1,0 +1,16 @@
+{
+  "platform": "core",
+  "title": "CORE Paper",
+  "rank": 1,
+  "extra": {
+    "core": {
+      "journal": "CORE Journal",
+      "publisher": "CORE Publisher",
+      "identifiers": {
+        "issn": ["1749-4885"],
+        "eissn": ["1749-4893"]
+      },
+      "citationCount": 3
+    }
+  }
+}

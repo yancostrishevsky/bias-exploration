@@ -16,6 +16,42 @@ rate_limit:
 retries:
   max: 3
   backoff: 1.5
+llm:
+  enabled: false
+  provider: openrouter
+  mode: query_csv
+  models:
+    - openai/gpt-4o-mini
+    - anthropic/claude-3.5-sonnet
+    - google/gemini-2.0-flash-001
+  generation:
+    temperature: 0.1
+    max_tokens: 1500
+    top_p: 1.0
+    timeout_seconds: 60
+    repeats_per_query: 2
+    top_k_articles: 10
+  queries:
+    input_csv: queries/queries.csv
+    prompt_template_file: prompts/article_retrieval.txt
+  controlled_bias_probes:
+    input_file: configs/llm_scenarios.example.yaml
+  output_dir: runs/llm
+  parsing:
+    require_json: true
+  enrichment:
+    enabled: true
+  save_payloads: true
+diagnostics:
+  enabled: true
+  capture_samples: true
+  capture_requests: true
+  max_sample_records: 2
+  max_enrich_trace_entries: 5
+  max_request_logs: 20
+  redact_fields: ["apiKey", "insttoken", "Authorization", "X-ELS-APIKey"]
+geo:
+  top_k_country_min_coverage: 0.4
 impact_factor:
   enabled: true
   xlsx_path: "data/vendor/jif.xlsx"
@@ -39,3 +75,60 @@ impact_factor:
   min_title_len: 8
   max_len_ratio_delta: 0.2
   reject_ambiguous: true
+
+# Optional: Elsevier Scopus metadata enrichment (OFF by default).
+# This block configures BOTH:
+# - the `scopus` connector (collect stage),
+# - and Scopus enrichment (enrich stage).
+# Legacy alias `scopus_enrich:` is still supported.
+scopus:
+  enabled: false
+  fail_open: true
+  base_url: "https://api.elsevier.com"
+  timeout: 20
+  rps: 1
+  burst: 2
+  max_retries: 3
+  max_records_per_query: 100
+  page_size: 25
+
+  # Search API defaults (connector + DOI fallback search in enrichment)
+  search_view: "STANDARD"
+  search_sort: null
+  search_fields: null
+
+  cache_ttl_days: 7
+  overwrite_existing: false
+  title_search_enabled: false
+  title_search_min_len: 32
+  prefer_issn_from_scopus: true
+  prefer_affiliations_from_scopus: true
+
+  # Abstract Retrieval API view (e.g., BASIC / FULL / COMPLETE).
+  abstract_view: "FULL"
+  abstract_fields: null
+  # Ordered fallback sequence when FULL/BASIC returns 401/403.
+  abstract_fallback_views: ["META", null]
+  # Minimal field set for entitlement-safe fallback.
+  abstract_fields_minimal: "dc:title,prism:doi,prism:publicationName,prism:issn,prism:coverDate,citedby-count,openaccessFlag,subtype,subtypeDescription,affiliation-country,affilname"
+
+  # Optional endpoints (may require additional entitlements).
+  enable_citation_overview: false
+  citation_overview_exclude_self: true
+  enable_serial_title_metrics: false
+  serial_title_view: "STANDARD"
+  enable_plumx: false
+
+  # Optional: dedicated Scopus journal rankings enrichment.
+  rankings:
+    enabled: false
+    # API key is usually read from SCOPUS_API_KEY / ELSEVIER_API_KEY env var.
+    api_key: null
+    # Optional institutional token (or SCOPUS_INSTTOKEN env var).
+    insttoken: null
+    base_url: "https://api.elsevier.com"
+    view_preference: ["ENHANCED", "STANDARD"]
+    timeout_s: 30
+    cache_ttl_days: 30
+    rate_limit: 1.0
+    fail_open: true

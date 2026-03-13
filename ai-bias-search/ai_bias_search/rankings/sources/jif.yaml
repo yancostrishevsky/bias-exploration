@@ -1,0 +1,36 @@
+id: jif
+label: Journal Impact Factor (JIF/JCR)
+enabled: true
+dataset_path: ../../../data/vendor/jif.xlsx
+format: xlsx
+has_header: true
+sheet_name: null
+fields:
+  title: "Journal Name"
+  issn_print: "ISSN"
+  issn_online: "eISSN"
+  rank_value: "JIF 2024"
+  rank_year: "JCR Year"
+extra_fields:
+  publisher: "Publisher"
+  total_cites: "Total Cites"
+  total_articles: "Total Articles"
+  citable_items: "Citable Items"
+  jif_5y: "5-Year JIF"
+  jif_wo_self_cites: "JIF Without Self-Cites"
+  jci: "JCI"
+  quartile: "JIF Quartile"
+  jif_rank: "JIF Rank"
+rank_value_type: float
+normalization:
+  strip_parens: false
+  replace_ampersand: true
+  remove_punct: true
+  collapse_whitespace: true
+  lowercase: true
+allow_fuzzy: true
+fuzzy_threshold: 0.98
+reject_ambiguous_fuzzy: true
+fuzzy_ambiguity_delta: 0.02
+cache_ttl_days: 30
+
